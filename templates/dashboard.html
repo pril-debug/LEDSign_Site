@@ -31,7 +31,7 @@
       </div>
       <label>Default Gateway <input name="gw" placeholder="192.168.1.1"></label>
       <button class="btn" type="submit">Save & Apply</button>
-      <p class="muted">Writes <code>/etc/dhcpcd.conf</code> and restarts dhcpcd.</p>
+      <p class="muted">Saving will apply new network settings and may change connectivity.</p>
     </form>
   </div>
 
@@ -47,7 +47,6 @@
       <input type="file" name="logo" accept=".png,.jpg,.jpeg,.gif" required>
       <button class="btn" type="submit">Upload</button>
     </form>
-    <p class="muted">We never overwrite the default White-logo.png.</p>
   </div>
 </section>
 
@@ -63,4 +62,5 @@
   </form>
 </section>
 {% endblock %}
+
 
