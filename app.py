@@ -3,7 +3,6 @@ import os, json, secrets, subprocess
 from pathlib import Path
 from flask import Flask, request, redirect, url_for, render_template, session, flash, send_from_directory
 from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
 
 # Resolve /home/<user>/sign-controller from repo location
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -55,32 +54,94 @@ def logout():
     session.clear()
     return redirect(url_for("landing"))
 
+# ---- helper: read current network (prefill form) ----
+def _current_net(iface="eth0"):
+    mode, ip, cidr, gw, dns = "dhcp", "", "", "", ""
+    # Prefer our tagged block in dhcpcd.conf
+    try:
+        confp = Path("/etc/dhcpcd.conf")
+        if confp.exists():
+            lines = confp.read_text().splitlines()
+            tag_begin = f"# LEDSign {iface} BEGIN"
+            tag_end   = f"# LEDSign {iface} END"
+            start = end = -1
+            for i,l in enumerate(lines):
+                if l.strip() == tag_begin: start = i
+                if l.strip() == tag_end:   end = i
+            if start != -1 and end != -1:
+                blk = "\n".join(lines[start:end+1])
+                if "static ip_address=" in blk:
+                    mode = "static"
+                for l in blk.splitlines():
+                    s = l.strip()
+                    if s.startswith("static ip_address="):
+                        v = s.split("=",1)[1].strip()
+                        ip, cidr = v.split("/",1)
+                    elif s.startswith("static routers="):
+                        gw = s.split("=",1)[1].strip()
+                    elif s.startswith("static domain_name_servers="):
+                        dns = s.split("=",1)[1].strip()
+    except Exception:
+        pass
+    # Fallbacks from live state
+    if not ip:
+        try:
+            out = subprocess.check_output(["ip","-4","-o","addr","show","dev",iface], text=True)
+            ipcidr = out.split()[3]  # e.g. 192.168.0.156/24
+            ip, cidr = ipcidr.split("/",1)
+        except Exception:
+            pass
+    if not gw:
+        try:
+            out = subprocess.check_output(["ip","route","show","default","dev",iface], text=True)
+            gw = out.split()[2]
+        except Exception:
+            pass
+    return dict(iface=iface, mode=mode, ip=ip, cidr=cidr, gw=gw, dns=dns)
+
 @app.get("/dashboard")
 def dashboard():
     if not is_logged_in():
         return redirect(url_for("login"))
     conf = load_conf()
-    return render_template("dashboard.html", conf=conf)
+    net = _current_net("eth0")
+    return render_template("dashboard.html", conf=conf, net=net)
 
 # ----- Ethernet network -----
 @app.post("/network/apply")
 def network_apply():
     if not is_logged_in():
         return redirect(url_for("login"))
-    mode = request.form.get("mode","dhcp")
-    ip   = request.form.get("ip","")
-    mask = request.form.get("mask","")
-    gw   = request.form.get("gw","")
-    payload = json.dumps({"mode": mode, "ip": ip, "mask": mask, "gw": gw})
+
+    iface = (request.form.get("iface") or "eth0").strip()
+    mode  = (request.form.get("mode")  or "dhcp").strip().lower()
+    ip    = (request.form.get("ip")    or "").strip()
+    # support either "mask" (your template today) or "cidr"
+    cidr  = (request.form.get("mask")  or request.form.get("cidr") or "").strip()
+    gw    = (request.form.get("gw")    or "").strip()
+    # Accept "1.1.1.1 8.8.8.8" OR "1.1.1.1,8.8.8.8"
+    dns_raw = (request.form.get("dns") or "").replace(",", " ").strip()
+    dns_list = [d for d in dns_raw.split() if d]  # space-separated list
+
+    cmd = ["sudo", str(SCRIPTS_DIR/"apply_network.sh"), iface, mode]
+    if mode == "static":
+        if not ip or not cidr or not gw:
+            flash("Static requires IP, mask (CIDR), and gateway.","error")
+            return redirect(url_for("dashboard"))
+        cmd += [ip, cidr, gw]
+        if dns_list:
+            cmd += dns_list
+
     try:
-        subprocess.run(
-            ["sudo", str(SCRIPTS_DIR/"apply_network.sh")],
-            input=payload.encode(),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-        )
-        flash("Network settings applied. dhcpcd restarting…","ok")
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+        if r.returncode != 0:
+            raise subprocess.CalledProcessError(r.returncode, cmd, r.stdout, r.stderr)
+        flash("Network settings applied. Interface will bounce.","ok")
     except subprocess.CalledProcessError as e:
-        flash((e.stderr or e.stdout).decode() or "Apply failed","error")
+        flash((e.stderr or e.stdout) or "Apply failed","error")
+    except Exception as e:
+        flash(str(e), "error")
+
     return redirect(url_for("dashboard"))
 
 # ----- Wi-Fi scan/join -----
@@ -111,7 +172,7 @@ def wifi_apply():
         )
         flash("Wi-Fi settings applied. Reconfiguring…","ok")
     except subprocess.CalledProcessError as e:
-        flash((e.stderr or e.stdout).decode() or "Wi-Fi apply failed","error")
+        flash((e.stderr or e.stdout).decode() if isinstance(e.stdout, bytes) else (e.stderr or e.stdout) or "Wi-Fi apply failed","error")
     return redirect(url_for("wifi_scan"))
 
 # ----- Customer logo upload -----
