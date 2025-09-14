@@ -54,7 +54,7 @@ def logout():
     session.clear()
     return redirect(url_for("landing"))
 
-# ---- helper: read current network (prefill form) ----
+# ---- helper: read current Ethernet network (prefill form) ----
 def _current_net(iface="eth0"):
     mode, ip, cidr, gw, dns = "dhcp", "", "", "", ""
     # Prefer our tagged block in dhcpcd.conf
@@ -98,6 +98,21 @@ def _current_net(iface="eth0"):
         except Exception:
             pass
     return dict(iface=iface, mode=mode, ip=ip, cidr=cidr, gw=gw, dns=dns)
+
+# ---- helper: current Wi-Fi state (for banner + row badge) ----
+def _wifi_state(iface="wlan0"):
+    ssid = ""
+    ip = ""
+    try:
+        ssid = subprocess.check_output(["iwgetid", iface, "-r"], text=True).strip()
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "dev", iface], text=True)
+        ip = out.split()[3].split("/")[0]
+    except Exception:
+        pass
+    return {"iface": iface, "ssid": ssid, "ip": ip, "connected": bool(ssid)}
 
 @app.get("/dashboard")
 def dashboard():
@@ -150,12 +165,16 @@ def wifi_scan():
     if not is_logged_in():
         return redirect(url_for("login"))
     try:
-        out = subprocess.check_output(["sudo", str(SCRIPTS_DIR/"wifi_scan.sh")], stderr=subprocess.STDOUT, timeout=20)
+        out = subprocess.check_output(
+            ["sudo", str(SCRIPTS_DIR/"wifi_scan.sh")],
+            stderr=subprocess.STDOUT, timeout=20
+        )
         aps = json.loads(out.decode() or "[]")
     except Exception as e:
         aps = []
         flash(f"Wi-Fi scan failed: {e}", "error")
-    return render_template("wifi.html", aps=aps)
+    state = _wifi_state("wlan0")
+    return render_template("wifi.html", aps=aps, state=state)
 
 @app.post("/wifi/apply")
 def wifi_apply():
@@ -172,7 +191,10 @@ def wifi_apply():
         )
         flash("Wi-Fi settings applied. Reconfiguring…","ok")
     except subprocess.CalledProcessError as e:
-        flash((e.stderr or e.stdout).decode() if isinstance(e.stdout, bytes) else (e.stderr or e.stdout) or "Wi-Fi apply failed","error")
+        msg = (e.stderr or e.stdout)
+        if isinstance(msg, bytes):
+            msg = msg.decode(errors="ignore")
+        flash(msg or "Wi-Fi apply failed","error")
     return redirect(url_for("wifi_scan"))
 
 # ----- Customer logo upload -----
@@ -227,40 +249,3 @@ if __name__ == "__main__":
     except Exception:
         port = 8000
     app.run(host="0.0.0.0", port=port)
-
-# ---- helper: current wifi state ----
-def _wifi_state(iface="wlan0"):
-    ssid = ""
-    ip = ""
-    try:
-        ssid = subprocess.check_output(
-            ["iwgetid", iface, "-r"], text=True
-        ).strip()
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(
-            ["ip", "-4", "-o", "addr", "show", "dev", iface],
-            text=True
-        )
-        # e.g. "3: wlan0    inet 192.168.0.56/24 brd 192.168.0.255 scope global ..."
-        ip = out.split()[3].split("/")[0]
-    except Exception:
-        pass
-    return {"iface": iface, "ssid": ssid, "ip": ip, "connected": bool(ssid)}
-
-@app.get("/wifi/scan")
-def wifi_scan():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-    try:
-        out = subprocess.check_output(["sudo", str(SCRIPTS_DIR/"wifi_scan.sh")],
-                                      stderr=subprocess.STDOUT, timeout=20)
-        aps = json.loads(out.decode() or "[]")
-    except Exception as e:
-        aps = []
-        flash(f"Wi-Fi scan failed: {e}", "error")
-    state = _wifi_state("wlan0")
-    return render_template("wifi.html", aps=aps, state=state)
-
-
