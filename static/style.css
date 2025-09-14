@@ -1,0 +1,33 @@
+:root{
+  --bg:#0b0d10; --fg:#e8eef5; --muted:#9bb0c3;
+  --card:#141a20; --accent:#4da3ff; --ok:#2ecc71; --err:#ff5c5c;
+  --border:#22303d; --pad:16px; --rad:14px;
+}
+*{box-sizing:border-box;font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+body{margin:0;background:var(--bg);color:var(--fg)}
+.nav{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#0f141a;border-bottom:1px solid var(--border)}
+.nav .brand{font-weight:700}
+.nav a,.linklike{color:var(--fg);text-decoration:none;margin-left:16px;opacity:.9}
+.linklike{background:none;border:none;cursor:pointer;font:inherit;padding:0}
+.container{max-width:1000px;margin:24px auto;padding:0 16px}
+.centered{display:flex;flex-direction:column;align-items:center;gap:24px;margin-top:60px}
+.logo{max-width:420px;width:80%;filter:drop-shadow(0 4px 24px rgba(77,163,255,.15))}
+.logo-sm{max-width:280px}
+.btn{background:var(--accent);border:none;color:#04121f;padding:10px 16px;border-radius:12px;font-weight:700;cursor:pointer}
+.btn:hover{filter:brightness(1.05)}
+.card{background:var(--card);padding:var(--pad);border-radius:var(--rad);border:1px solid var(--border);margin:16px 0}
+.grid-2{display:grid;grid-template-columns:1fr;gap:16px}
+@media(min-width:900px){.grid-2{grid-template-columns:1fr 1fr}}
+label{display:block;margin:8px 0}
+label input, select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:#0f141a;color:var(--fg)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.table{width:100%;border-collapse:collapse}
+.table th,.table td{padding:10px;border-bottom:1px solid var(--border)}
+.flashwrap{max-width:1000px;margin:16px auto;padding:0 16px}
+.flash{padding:12px 14px;border-radius:10px;margin:8px 0}
+.flash.ok{background:rgba(46,204,113,.15);border:1px solid rgba(46,204,113,.35)}
+.flash.error{background:rgba(255,92,92,.15);border:1px solid rgba(255,92,92,.35)}
+.muted{color:var(--muted)}
+.footer{padding:24px 16px;color:var(--muted);text-align:center;border-top:1px solid var(--border);margin-top:40px}
+.inline{display:inline-flex;gap:8px;align-items:center}
+.cta{margin-top:8px}

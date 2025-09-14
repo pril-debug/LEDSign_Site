@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Wi-Fi Networks</h1>
+<div class="card">
+  <form method="get" action="{{ url_for('wifi_scan') }}">
+    <button class="btn" type="submit">Scan</button>
+  </form>
+  {% if aps and aps|length > 0 %}
+    <table class="table">
+      <thead><tr><th>SSID</th><th>Signal (dBm)</th><th>Join</th></tr></thead>
+      <tbody>
+        {% for ap in aps %}
+          <tr>
+            <td>{{ ap.ssid }}</td>
+            <td>{{ ap.signal }}</td>
+            <td>
+              <form method="post" action="{{ url_for('wifi_apply') }}" class="inline">
+                <input type="hidden" name="ssid" value="{{ ap.ssid }}">
+                <input name="psk" type="password" placeholder="Password" required>
+                <button class="btn" type="submit">Join</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No networks found yet. Try scanning again.</p>
+  {% endif %}
+</div>
+{% endblock %}

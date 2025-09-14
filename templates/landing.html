@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="centered">
+  <img class="logo" src="{{ url_for('static', filename='white-logo.png') }}" alt="LED Logo">
+  <div class="cta">
+    <a class="btn" href="{{ url_for('login') }}">Admin Login</a>
+  </div>
+</div>
+{% endblock %}
