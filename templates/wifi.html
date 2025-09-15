@@ -12,6 +12,15 @@
     <p class="muted">Not connected to Wi-Fi.</p>
   {% endif %}
 
+  {% if configured_ssids and configured_ssids|length > 0 %}
+    <p class="muted">
+      Configured: 
+      {% for s in configured_ssids %}
+        <span class="badge">{{ s }}</span>{% if not loop.last %} {% endif %}
+      {% endfor %}
+    </p>
+  {% endif %}
+
   <form method="get" action="{{ url_for('wifi_scan') }}">
     <button class="btn" type="submit">Scan</button>
   </form>
@@ -21,21 +30,30 @@
       <thead><tr><th>SSID</th><th>Join</th></tr></thead>
       <tbody>
         {% for ap in aps %}
+          {% set is_connected = state.connected and ap.ssid == state.ssid %}
+          {% set is_configured = configured_ssids and (ap.ssid in configured_ssids) %}
           <tr>
             <td>
               {{ ap.ssid }}
-              {% if state.connected and ap.ssid == state.ssid %}
+              {% if is_connected %}
                 <span class="badge ok">Connected</span>
+              {% elif is_configured %}
+                <span class="badge">Configured</span>
               {% endif %}
             </td>
             <td>
-              {% if state.connected and ap.ssid == state.ssid %}
+              {% if is_connected %}
                 <button class="btn" type="button" disabled>Joined</button>
               {% else %}
                 <form method="post" action="{{ url_for('wifi_apply') }}" class="inline">
                   <input type="hidden" name="ssid" value="{{ ap.ssid }}">
-                  <input name="psk" type="password" placeholder="Password" required>
-                  <button class="btn" type="submit">Join</button>
+                  {% if is_configured %}
+                    <!-- Already in wpa_supplicant; no need to re-enter password -->
+                    <input name="psk" type="password" placeholder="Password (optional)">
+                  {% else %}
+                    <input name="psk" type="password" placeholder="Password" required>
+                  {% endif %}
+                  <button class="btn" type="submit">{{ 'Reconnect' if is_configured else 'Join' }}</button>
                 </form>
               {% endif %}
             </td>
