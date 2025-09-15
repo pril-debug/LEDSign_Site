@@ -54,6 +54,40 @@ def logout():
     session.clear()
     return redirect(url_for("landing"))
 
+
+# ---- helper: read configured Wi-Fi SSIDs from wpa_supplicant ----
+def _wifi_configured_ssids(conf_path="/etc/wpa_supplicant/wpa_supplicant.conf"):
+    ssids = []
+    try:
+        text = Path(conf_path).read_text(errors="ignore")
+        in_block = False
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("network={"):
+                in_block = True
+                continue
+            if in_block and s.startswith("}"):
+                in_block = False
+                continue
+            if in_block and s.startswith('ssid="'):
+                # grab value between first pair of quotes
+                try:
+                    val = s.split('ssid="', 1)[1].split('"', 1)[0]
+                    if val:
+                        ssids.append(val)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # de-dup while preserving order
+    seen = set()
+    uniq = []
+    for x in ssids:
+        if x not in seen:
+            uniq.append(x); seen.add(x)
+    return uniq
+
+
 # ---- helper: read current Ethernet network (prefill form) ----
 def _current_net(iface="eth0"):
     mode, ip, cidr, gw, dns = "dhcp", "", "", "", ""
@@ -174,7 +208,8 @@ def wifi_scan():
         aps = []
         flash(f"Wi-Fi scan failed: {e}", "error")
     state = _wifi_state("wlan0")
-    return render_template("wifi.html", aps=aps, state=state)
+    configured_ssids = _wifi_configured_ssids()
+    return render_template("wifi.html", aps=aps, state=state, configured_ssids=configured_ssids)
 
 @app.post("/wifi/apply")
 def wifi_apply():
@@ -249,3 +284,4 @@ if __name__ == "__main__":
     except Exception:
         port = 8000
     app.run(host="0.0.0.0", port=port)
+
