@@ -20,7 +20,7 @@ from display_layout import saved_layout, validate_layout
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 CONF_PATH = APP_ROOT / 'config/settings.json'
-LOGO_DEFAULT = APP_ROOT / 'config/Logo-White.png'
+LOGO_DEFAULT = APP_ROOT / 'FlexClock-Light.png'
 LOGO_CUSTOM = APP_ROOT / 'config/customer_logo.png'
 SCRIPTS_DIR = APP_ROOT / 'scripts'
 app = Flask(__name__)
@@ -61,7 +61,7 @@ def auth_version():
 
 @app.before_request
 def protect():
-    public = {'landing', 'login', 'static', 'health'}
+    public = {'landing', 'login', 'static', 'health', 'brand_logo'}
     if request.endpoint not in public:
         if not session.get('auth') or session.get('version') != auth_version():
             session.clear()
@@ -94,6 +94,13 @@ def finishlynx_status():
                 port=value.get('port', 2042), protocol=value.get('protocol', 'UDP'))
 
 
+@app.get('/brand/<name>')
+def brand_logo(name):
+    if name not in ('FlexClock.png', 'FlexClock-Light.png'):
+        abort(404)
+    return send_file(APP_ROOT / name, mimetype='image/png')
+
+
 @app.get('/api/finishlynx')
 def finishlynx_api():
     return finishlynx_status()
@@ -116,16 +123,20 @@ def headers(response):
 
 @app.get('/')
 def landing():
-    return render_template('landing.html', title='Full-Color LED Race Clock')
+    if session.get('auth') and session.get('version') == auth_version():
+        return redirect(url_for('dashboard'))
+    return render_template('landing.html', title='FlexClock')
 
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if request.method == 'GET' and session.get('auth') and session.get('version') == auth_version():
+        return redirect(url_for('dashboard'))
     if request.method == 'POST':
         conf = load_conf()['auth']
         if request.form.get('username', '').strip() == conf['username'] and check_password_hash(conf['password_hash'], request.form.get('password', '')):
             session.clear()
-            session.update(auth=True, version=auth_version(), permanent=True)
+            session.update(auth=True, version=auth_version(), permanent=True, csrf=secrets.token_hex(32))
             return redirect(url_for('dashboard'))
         flash('Invalid username or password.', 'error')
     return render_template('login.html', title='Admin login')
@@ -245,7 +256,7 @@ def software_update_action():
     if action not in ('install', 'rollback'):
         return dict(ok=False, message='Choose Install Update or Rollback.'), 400
     if action == 'install' and not any(item['version'] == version and item['installable']
-                                      for item in updates.snapshot()['releases']):
+                                      for item in updates.snapshot()['upgrades']):
         return dict(ok=False, message='Check releases and choose an available update.'), 400
     try:
         if action == 'install' and not updates.connection()['connected']:

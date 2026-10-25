@@ -1,1 +1,4 @@
-{% extends 'base.html' %}{% block content %}<div class="login-shell"><div class="login-intro"><span class="product-tag">FLEXCLOCK CONTROL PANEL</span><h1>Ready when<br>you are.</h1><p>Sign in to manage your Full-Color LED Race Clock.</p><span class="rgb-line"></span></div><section class="card login-card"><div class="card-header"><div><h2>Admin login</h2><p>Enter your device credentials.</p></div><span class="icon-tile blue">↗</span></div><form method="post" class="card-body"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="button full">Sign in <span aria-hidden="true">→</span></button><p class="help">Access is limited to authorized administrators.</p></form></section></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<section class="login-page"><div class="login-page-heading"><h1>Log in</h1><p>Enter your FlexClock username and password.</p></div><section class="card welcome-login">{% include 'login_form.html' %}</section></section>
+{% endblock %}

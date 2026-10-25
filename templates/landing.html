@@ -1,1 +1,13 @@
-{% extends 'base.html' %}{% block content %}<section class="hero"><div class="hero-copy"><span class="product-tag"><span class="rgb-dots" aria-hidden="true">● ● ●</span> FULL-COLOR LED RACE CLOCK</span><h1>Race time.<br><span>In full color.</span></h1><p class="hero-description">Clear timing for races and sporting events. Manage your FlexClock display, connections and device settings in one place.</p><a class="button large" href="/login">Open control panel <span aria-hidden="true">→</span></a><p class="hero-access">Administrator login required</p></div><div class="product-stage"><div class="clock-hardware" role="img" aria-label="Full-color RGB LED race clock showing 2 minutes 3.7 seconds"><div class="hardware-top"><span>FLEXCLOCK</span><span class="rgb-dots">● ● ●</span></div><div class="led-panel"><div class="led-caption">RACE TIME</div><div class="led-digits">2:03.7</div><div class="led-bottom"><span>FULL COLOR</span><span>RGB LED</span></div></div><div class="hardware-bottom"><span>FlexClock</span><span>FULL-COLOR LED RACE CLOCK</span></div></div><div class="stage-caption"><span class="color-swatch blue"></span><span class="color-swatch green"></span><span class="color-swatch coral"></span> Built for race day.</div></div></section><section class="landing-tools" aria-label="Control panel features"><div><span class="feature-number">01</span><h2>Display</h2><p>Manage logos and review your clock configuration.</p></div><div><span class="feature-number">02</span><h2>Connections</h2><p>View Ethernet and Wi-Fi status in one place.</p></div><div><span class="feature-number">03</span><h2>Device settings</h2><p>Manage your device name and administrator access.</p></div></section>{% endblock %}
+{% extends 'base.html' %}
+{% from 'components.html' import icon %}
+{% block content %}
+<section class="welcome-layout">
+  <div class="welcome-copy"><p class="eyebrow">RACE CLOCK CONTROL</p><h1>Control your clock.</h1><p>Set times, count laps and rounds, or connect to FinishLynx.</p></div>
+  <section class="card welcome-login"><div class="card-header"><h2>Log in</h2></div>{% include 'login_form.html' %}</section>
+</section>
+<section class="welcome-features" aria-label="Clock features">
+  <div><span class="icon-tile violet">{{ icon('display') }}</span><h2>Clock modes</h2><p>Count up, count down, laps and rounds.</p></div>
+  <div><span class="icon-tile blue">{{ icon('finishlynx') }}</span><h2>FinishLynx</h2><p>Live event names, times and results.</p></div>
+  <div><span class="icon-tile teal">{{ icon('settings') }}</span><h2>Device settings</h2><p>Network, logos, software updates and activity.</p></div>
+</section>
+{% endblock %}

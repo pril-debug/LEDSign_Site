@@ -239,7 +239,27 @@ class Website(unittest.TestCase):
         for removed in (b'LED Track Sign', b'Illustration', b'Precision at the Track'):
             self.assertNotIn(removed, page)
         self.assertIn(b'style.css?v=', page)
-        self.assertIn(b'led-digits', page)
+        self.assertNotIn(b'led-digits', page)
+        self.assertIn(b'/brand/FlexClock.png', page)
+        self.assertIn(b'/brand/FlexClock-Light.png', page)
+        self.assertIn(b'Control your clock.', page)
+        self.assertIn(b'action="/login"', page)
+
+    def test_public_brand_assets_and_authenticated_entry(self):
+        for name in ('FlexClock.png','FlexClock-Light.png'):
+            response=self.client.get('/brand/'+name)
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.mimetype,'image/png')
+            self.assertEqual(response.data,(web.APP_ROOT/name).read_bytes())
+            response.close()
+        self.assertEqual(self.client.get('/brand/settings.json').status_code,404)
+        self.assertEqual(self.client.get('/brand/unknown.png').status_code,404)
+        page=self.client.get('/login').data
+        self.assertIn(b'autocomplete="current-password"',page)
+        self.assertNotIn(b'Ready when',page)
+        self.login()
+        self.assertEqual(self.client.get('/').location,'/dashboard')
+        self.assertEqual(self.client.get('/login').location,'/dashboard')
 
 
 
