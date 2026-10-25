@@ -34,7 +34,7 @@ document.querySelectorAll('form:not([method="dialog"])').forEach(form => form.ad
   }
   approved.delete(form);
   const button = form.querySelector('button[type="submit"], button:not([type])');
-  if (button) { button.disabled = true; button.textContent = 'Saving…'; }
+  if (button) { button.disabled = true; button.textContent = form.method.toLowerCase() === 'get' ? 'Searching…' : 'Saving…'; }
   form.setAttribute('aria-busy', 'true');
 }));
 document.querySelectorAll('select[name="mode"]').forEach(select => {
@@ -46,4 +46,11 @@ document.querySelectorAll('select[name="mode"]').forEach(select => {
     fields.querySelectorAll('input').forEach(input => { input.disabled = inactive; input.required = !inactive; });
   };
   select.addEventListener('change', update); update();
+});
+document.querySelectorAll('time[data-local-time]').forEach(time => {
+  const date = new Date(time.dateTime);
+  if (!Number.isNaN(date.getTime())) {
+    time.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(date);
+    time.title = 'Your local time';
+  }
 });

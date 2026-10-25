@@ -11,6 +11,7 @@ from flask import Flask, request, redirect, url_for, render_template, session, f
 from werkzeug.security import check_password_hash, generate_password_hash
 from PIL import Image, UnidentifiedImageError
 import device
+import activity
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 CONF_PATH = APP_ROOT / 'config/settings.json'
@@ -119,6 +120,23 @@ def display():
 @app.get('/settings')
 def settings():
     return render_template('settings.html', title='Settings', status=device.status())
+
+
+@app.get('/logs')
+def logs():
+    filters = dict(service=request.args.get('service', 'all'), window=request.args.get('window', 'day'),
+                   query=request.args.get('q', '').strip(), level=request.args.get('level', 'all'))
+    error = None
+    history = dict(events=[], total=0, scanned=0, limited=False, page=1, pages=1)
+    try:
+        page = int(request.args.get('page', '1'))
+        history = activity.read_history(**filters, page=page)
+    except ValueError as e:
+        error = str(e) if not str(e).startswith('invalid literal') else 'Choose a valid page number.'
+    page_args = dict(service=filters['service'], window=filters['window'], q=filters['query'], level=filters['level'])
+    return render_template('logs.html', title='Logging', status=device.status(), history=history,
+                           filters=filters, error=error, windows=activity.WINDOWS, levels=activity.LEVELS,
+                           page_args=page_args)
 
 
 @app.get('/network')

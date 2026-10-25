@@ -331,4 +331,92 @@ class DeviceSettings(unittest.TestCase):
 
 
 
+class ServiceLogging(unittest.TestCase):
+    def setUp(self):
+        import activity
+        self.activity = activity
+
+    def record(self, message='Started service.', unit='sign-web.service', stamp=1792938000000000, priority='6'):
+        return json.dumps(dict(UNIT=unit, MESSAGE=message, __REALTIME_TIMESTAMP=str(stamp), PRIORITY=priority))
+
+    def response(self, lines, code=0, error=''):
+        import subprocess
+        return subprocess.CompletedProcess([], code, '\n'.join(lines), error)
+
+    def test_plain_language_and_no_diagnostics_or_secrets(self):
+        for raw, expected in [('Address already in use','Unable to start'),('Scheduled restart job','automatic restart'),('Traceback secret=abc','internal error')]:
+            message, level = self.activity.describe(raw, '6')
+            self.assertIn(expected, message)
+            self.assertNotIn('secret=', message)
+        message, level = self.activity.describe('password=do-not-display /home/admin/private.py', '6')
+        self.assertEqual(message, 'Service activity was recorded.')
+        self.assertEqual(self.activity.describe('opaque', '3')[1], 'error')
+        self.assertEqual(self.activity.describe('opaque', '4')[1], 'warning')
+
+    def test_allowlist_and_filters_reject_without_reading(self):
+        with patch.object(self.activity.subprocess, 'run') as operation:
+            for args in [dict(service='ssh'),dict(service='sign-web;reboot'),dict(window='anything'),dict(level='invalid'),dict(query='x'*121)]:
+                with self.assertRaises(ValueError): self.activity.read_history(**args)
+            operation.assert_not_called()
+
+    def test_search_and_service_scoping(self):
+        response = self.response([self.record('Address already in use','sign-ui.service'),self.record('Started dashboard.'),self.record('private','ssh.service')])
+        with patch.object(self.activity.subprocess,'run',return_value=response) as operation:
+            history=self.activity.read_history(service='sign-ui',query='ANOTHER PROGRAM',level='error')
+        self.assertEqual(history['total'],1)
+        self.assertEqual(history['events'][0]['service'],'LED Display Controller')
+        command=operation.call_args.args[0]
+        self.assertIn('--unit=sign-ui.service',command)
+        self.assertIn('--lines=1000',command)
+        self.assertNotIn('ANOTHER PROGRAM',command)
+        self.assertEqual(operation.call_args.kwargs['timeout'],8)
+
+    def test_pagination_and_newest_first(self):
+        rows=[self.record(stamp=1792938000000000+i*1000000) for i in range(65)]
+        with patch.object(self.activity.subprocess,'run',return_value=self.response(rows)):
+            first=self.activity.read_history(page=1)
+            second=self.activity.read_history(page=2)
+        self.assertEqual((len(first['events']),len(second['events'])),(50,15))
+        self.assertGreater(first['events'][0]['time'],second['events'][0]['time'])
+        self.assertEqual(first['pages'],2)
+
+    def test_history_failures_are_not_empty_success(self):
+        import subprocess
+        for result in [self.response([],1),self.response([],0,'insufficient permissions')]:
+            with patch.object(self.activity.subprocess,'run',return_value=result):
+                with self.assertRaises(ValueError):self.activity.read_history()
+        for error in [OSError('missing'),subprocess.TimeoutExpired('journalctl',8)]:
+            with patch.object(self.activity.subprocess,'run',side_effect=error):
+                with self.assertRaises(ValueError):self.activity.read_history()
+
+    def test_malformed_rows_and_real_empty_history(self):
+        with patch.object(self.activity.subprocess,'run',return_value=self.response(['bad','[]','{}',self.record(stamp='bad')])):
+            self.assertEqual(self.activity.read_history()['total'],0)
+
+    def test_logging_requires_auth_and_settings_have_no_expanders(self):
+        client=web.app.test_client()
+        self.assertEqual(client.get('/logs').status_code,302)
+        # Authentication in this rendering test uses the real hash version, without changing it.
+        with client.session_transaction() as session:
+            session.update(auth=True,version=web.auth_version())
+        with patch.object(web.activity,'read_history',return_value=dict(events=[],total=0,scanned=0,limited=False,page=1,pages=1)):
+            page=client.get('/logs').data
+            self.assertIn(b'No activity in this period',page)
+            self.assertIn(b'Search activity',page)
+            self.assertNotIn(b'<details',page)
+        settings=client.get('/settings').data
+        self.assertIn(b'Logging',settings)
+        self.assertIn(b'View all activity',settings)
+        self.assertNotIn(b'<details',settings)
+        self.assertNotIn(b'Technical details',settings)
+
+    def test_failure_and_invalid_page_render_cleanly(self):
+        client=web.app.test_client()
+        with client.session_transaction() as session:session.update(auth=True,version=web.auth_version())
+        with patch.object(web.activity,'read_history',side_effect=ValueError('Activity could not be loaded. Try again.')):
+            self.assertIn(b'Activity could not be loaded',client.get('/logs').data)
+        self.assertIn(b'Choose a valid page number.',client.get('/logs?page=nope').data)
+
+
+
 if __name__ == '__main__': unittest.main()
