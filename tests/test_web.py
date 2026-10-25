@@ -87,7 +87,7 @@ class Website(unittest.TestCase):
         self.assertNotIn(b'href="/updates"', page)
         self.assertNotIn(b'href="/logs"', page)
         self.assertIn(b'href="/finishlynx"', page)
-        self.assertIn(b'Keyboard controls on the clock remain available.', page)
+        self.assertNotIn(b'Keyboard controls on the clock remain available.', page)
         settings = self.client.get('/settings').data
         self.assertIn(b'Manage software updates', settings)
         self.assertIn(b'View all activity', settings)
