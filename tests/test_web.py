@@ -59,9 +59,45 @@ class Website(unittest.TestCase):
 
     def test_pages_and_unknown_status(self):
         self.login()
-        for path in ['/dashboard', '/display', '/network', '/settings']:
+        for path in ['/dashboard', '/network', '/settings']:
             self.assertEqual(self.client.get(path).status_code, 200)
-        self.assertIn(b'Display status unavailable', self.client.get('/dashboard').data)
+        self.assertIn(b'Clock Control', self.client.get('/dashboard').data)
+
+    def test_dashboard_mode_controls(self):
+        for path in ('/api/controller/status', '/finishlynx'):
+            self.assertEqual(self.client.get(path).status_code, 302)
+        self.assertEqual(self.client.post('/api/controller/mode').status_code, 302)
+        self.login()
+        self.assertEqual(self.client.post('/api/controller/mode', data={'mode': 'Count Up'}).status_code, 400)
+        for action, mode, extra in [('set_time', 'Count Down', {'time':'00:12:36'}),
+                                    ('start', 'Count Down', {}), ('select', 'Round Counter', {}),
+                                    ('lap_set', 'Lap Counter', {'number':'42'})]:
+            with patch.object(web.controller, 'command', return_value={'ok': True, 'message': 'Confirmed.'}) as send:
+                response = self.post('/api/controller/mode', dict(action=action, mode=mode, **extra))
+                self.assertEqual(response.status_code, 200)
+                send.assert_called_once_with(action, mode, value=extra.get('time'), number=extra.get('number'))
+        for error, status in [(ValueError('Select a mode.'), 400), (RuntimeError('Clock unavailable.'), 503)]:
+            with patch.object(web.controller, 'command', side_effect=error):
+                response = self.post('/api/controller/mode', {'action': 'select', 'mode': 'Count Up'})
+                self.assertEqual(response.status_code, status)
+                self.assertFalse(response.json['ok'])
+        page = self.client.get('/dashboard').data
+        self.assertIn(b'On the clock', page)
+        self.assertNotIn(b'<select', page)
+        self.assertNotIn(b'href="/updates"', page)
+        self.assertNotIn(b'href="/logs"', page)
+        self.assertIn(b'href="/finishlynx"', page)
+        self.assertIn(b'Keyboard controls on the clock remain available.', page)
+        settings = self.client.get('/settings').data
+        self.assertIn(b'Manage software updates', settings)
+        self.assertIn(b'View all activity', settings)
+        finishlynx = self.client.get('/finishlynx')
+        self.assertEqual(finishlynx.status_code, 200)
+        self.assertIn(b'Use FinishLynx mode', finishlynx.data)
+        self.assertIn(b'Download FlexClock.lss', finishlynx.data)
+        self.assertIn(b'Results Auto', finishlynx.data)
+        with patch.object(web.controller, 'status', return_value={'connected':False, 'frame':None}):
+            self.assertFalse(self.client.get('/api/controller/status').json['connected'])
 
     def test_password_validation_persistence_and_sessions(self):
         self.login()
@@ -82,13 +118,14 @@ class Website(unittest.TestCase):
         self.assertFalse(web.LOGO_CUSTOM.exists())
         buf = io.BytesIO()
         Image.new('RGB', (16, 16)).save(buf, format='JPEG')
-        self.post('/logo/upload', {'logo': (io.BytesIO(buf.getvalue()), 'actual.jpg')})
+        response = self.post('/logo/upload', {'logo': (io.BytesIO(buf.getvalue()), 'actual.jpg')})
+        self.assertEqual(response.location, '/settings')
         with Image.open(web.LOGO_CUSTOM) as image:
             self.assertEqual(image.format, 'PNG')
         response = self.client.get('/customer_logo.png')
         self.assertEqual(response.status_code, 200)
         response.close()
-        self.post('/logo/remove')
+        self.assertEqual(self.post('/logo/remove').location, '/settings')
         self.assertFalse(web.LOGO_CUSTOM.exists())
         self.assertTrue(web.LOGO_DEFAULT.exists())
 
@@ -191,7 +228,7 @@ class Website(unittest.TestCase):
         with patch.object(web.device, 'status', return_value=observations):
             page = self.client.get('/dashboard').data
         self.assertIn(b'Restarting', page)
-        self.assertIn(b'25 automatic restarts', page)
+        self.assertNotIn(b'25 automatic restarts', page)
         self.assertIn(b'192.0.2.4', page)
         self.assertNotIn(b'2001:db8', page)
         self.assertIn(b'pill success', page)

@@ -12,6 +12,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from PIL import Image, UnidentifiedImageError
 import device
 import activity
+import updates
+import controller
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from display_layout import saved_layout, validate_layout
@@ -75,7 +77,32 @@ def globals_():
         session['csrf'] = secrets.token_hex(32)
     import hashlib
     assets = b''.join((Path(app.static_folder) / name).read_bytes() for name in ('style.css', 'app.js'))
-    return dict(csrf=session['csrf'], custom_logo_exists=LOGO_CUSTOM.exists(), asset_version=hashlib.sha256(assets).hexdigest()[:12])
+    return dict(lynx=finishlynx_status(), csrf=session['csrf'], custom_logo_exists=LOGO_CUSTOM.exists(), asset_version=hashlib.sha256(assets).hexdigest()[:12])
+
+
+def finishlynx_status():
+    import time
+    try:
+        value = json.loads((APP_ROOT / 'config/finishlynx-status.json').read_text())
+        running = value.get('running') is True and time.time() - value['updated'] < 4
+    except (OSError, ValueError, KeyError, TypeError):
+        value, running = {}, False
+    connected = running and value.get('connected') is True
+    return dict(running=running, connected=connected, label='Connected' if connected else 'Disconnected',
+                tone='success' if connected else 'warning', clock=value.get('clock', '') if running else '',
+                event=value.get('event', '') if running else '',
+                port=value.get('port', 2042), protocol=value.get('protocol', 'UDP'))
+
+
+@app.get('/api/finishlynx')
+def finishlynx_api():
+    return finishlynx_status()
+
+
+@app.get('/finishlynx/script')
+def finishlynx_script():
+    return send_file(APP_ROOT / 'FlexClock.lss', as_attachment=True,
+                     download_name='FlexClock.lss', mimetype='text/plain')
 
 
 @app.after_request
@@ -83,7 +110,7 @@ def headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Cache-Control'] = 'no-store'
-    response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'"
+    response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'"
     return response
 
 
@@ -115,9 +142,30 @@ def dashboard():
     return render_template('dashboard.html', title='Dashboard', status=device.status())
 
 
+@app.post('/api/controller/mode')
+def controller_mode():
+    try:
+        return controller.command(request.form.get('action'), request.form.get('mode'),
+                                  value=request.form.get('time'), number=request.form.get('number'))
+    except ValueError as error:
+        return dict(ok=False, message=str(error)), 400
+    except RuntimeError as error:
+        return dict(ok=False, message=str(error)), 503
+
+
+@app.get('/api/controller/status')
+def controller_status():
+    return controller.status()
+
+
+@app.get('/finishlynx')
+def finishlynx():
+    return render_template('finishlynx.html', title='FinishLynx')
+
+
 @app.get('/display')
 def display():
-    return render_template('display.html', title='Display', conf=load_conf(), layout=saved_layout(load_conf()))
+    return redirect(url_for('dashboard'))
 
 
 @app.post('/display/settings')
@@ -150,6 +198,44 @@ def display_settings():
     except (OSError, subprocess.TimeoutExpired):
         app.logger.exception('Display settings operation failed')
         return dict(ok=False, message='Display operation could not be confirmed. Check the controller before trying again.'), 503
+
+
+@app.get('/updates')
+def software_updates():
+    return render_template('updates.html', title='Software Updates', update=updates.snapshot())
+
+
+@app.get('/updates/status')
+def software_update_status():
+    return updates.snapshot()
+
+
+@app.post('/updates/check')
+def software_update_check():
+    try:
+        return dict(ok=True, update=updates.check())
+    except Exception:
+        app.logger.exception('Release check failed')
+        return dict(ok=False, message='Releases could not be checked. Check your internet connection and try again.'), 503
+
+
+@app.post('/updates/action')
+def software_update_action():
+    if request.form.get('confirm') != 'yes':
+        return dict(ok=False, message='Confirm the software change first.'), 400
+    action = request.form.get('action')
+    version = request.form.get('version', '')
+    if action not in ('install', 'rollback'):
+        return dict(ok=False, message='Choose Install Update or Rollback.'), 400
+    if action == 'install' and not any(item['version'] == version and item['installable']
+                                      for item in updates.snapshot()['releases']):
+        return dict(ok=False, message='Check releases and choose an available update.'), 400
+    try:
+        updates.start(action, version)
+        return dict(ok=True, message='Software operation started.'), 202
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        return dict(ok=False, message=str(error) if isinstance(error, ValueError)
+                    else 'The software operation could not start.'), 503
 
 
 @app.get('/settings')
@@ -301,17 +387,17 @@ def logo_upload():
         tmp = LOGO_CUSTOM.with_suffix('.tmp')
         tmp.write_bytes(output.getvalue())
         os.replace(tmp, LOGO_CUSTOM)
-        flash('Customer logo validated and saved as PNG. This does not change the live display.', 'ok')
+        flash('Customer logo saved.', 'ok')
     except (ValueError, OSError, UnidentifiedImageError, Image.DecompressionBombError):
         flash('Invalid image. Use a PNG, JPEG or GIF under 4 MB and 4 million pixels.', 'error')
-    return redirect(url_for('display'))
+    return redirect(url_for('settings'))
 
 
 @app.post('/logo/remove')
 def logo_remove():
     LOGO_CUSTOM.unlink(missing_ok=True)
     flash('Customer logo removed. Default logo preserved.', 'ok')
-    return redirect(url_for('display'))
+    return redirect(url_for('settings'))
 
 
 @app.get('/customer_logo.png')
@@ -369,7 +455,7 @@ def hostname_save():
 
 @app.get('/health')
 def health():
-    return {'status': 'ok'}
+    return {'status': 'ok', 'version': (APP_ROOT/'VERSION').read_text().strip() if (APP_ROOT/'VERSION').exists() else 'Local build'}
 
 
 @app.errorhandler(400)

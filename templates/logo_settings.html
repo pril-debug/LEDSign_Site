@@ -1,0 +1,15 @@
+<section class="card logo-settings">
+  <div class="card-header"><div class="section-title"><span class="icon-tile violet">{{ icon('display') }}</span><div><h2>Clock logo</h2><p>Used on the clock’s startup screen</p></div></div></div>
+  <div class="card-body logo-settings-layout">
+    <div class="logo-gallery">
+      <div><div class="image-preview"><img src="/default_logo.png" alt="Default FlexClock logo"></div><h3>Default logo</h3></div>
+      <div>{% if custom_logo_exists %}<div class="image-preview"><img src="/customer_logo.png" alt="Saved customer logo"></div>{% else %}<div class="image-preview empty-logo"><span>+</span><p>No custom logo saved</p></div>{% endif %}<h3>Customer logo</h3>{% if custom_logo_exists %}<form method="post" action="/logo/remove" data-confirm="Remove the saved customer logo? The default logo will be kept."><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button danger-outline">Remove customer logo</button></form>{% endif %}</div>
+    </div>
+    <form method="post" class="logo-upload" enctype="multipart/form-data" action="/logo/upload">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <h3>Upload customer logo</h3>
+      <label class="upload-zone">Choose an image<input type="file" name="logo" accept="image/png,image/jpeg,image/gif" required><span class="help">PNG, JPEG or GIF · up to 4 MB</span></label>
+      <button class="button">Save customer logo</button>
+    </form>
+  </div>
+</section>

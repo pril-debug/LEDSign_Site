@@ -22,7 +22,7 @@ modal.addEventListener('close', () => {
 });
 modal.addEventListener('cancel', () => { modal.returnValue = 'cancel'; });
 document.querySelectorAll('form:not([method="dialog"])').forEach(form => form.addEventListener('submit', event => {
-  if (form.id === 'display-settings') return;
+  if (['display-settings', 'clock-time-form', 'clock-lap-form'].includes(form.id)) return;
   const hostname = form.querySelector('input[name="hostname"]');
   if (hostname) hostname.value = hostname.value.trim().toLowerCase();
   if (form.dataset.confirm && !approved.has(form)) {
@@ -154,4 +154,235 @@ if (displayForm) {
     else showDialog(action==='test' ? 'Test panel mapping?' : 'Apply display settings?', action==='test' ? 'The controller will restart and show panel numbers with upward arrows for 15 seconds, then restore the previous layout. The current timing session will end.' : 'Apply this layout and restart the display controller? The current timing session will end. Save separately to keep this layout in the editor.', () => send(action));
   }));
   render();
+}
+
+const updateRoot = document.getElementById('software-updates');
+if (updateRoot) {
+  const element = name => document.getElementById(`update-${name}`);
+  const release = element('release');
+  const dialog = element('modal');
+  let state = null, requested = null, waiting = false, localMessage = null;
+  function pill(target, text, tone) {
+    const span = document.createElement('span'); span.className = `pill ${tone}`;
+    span.textContent = text; target.replaceChildren(span);
+  }
+  function controls() {
+    const option = release.selectedOptions[0];
+    element('install').disabled = waiting || !state?.configured || state.busy || !option?.value || option.dataset.installable !== 'yes' || option.value === state.installed;
+    element('rollback').disabled = waiting || !state?.configured || state.busy || !state.previous;
+    element('check').disabled = waiting || !!state?.busy;
+    release.disabled = waiting || !!state?.busy;
+    element('notes').textContent = option?.dataset.notes || 'No release notes provided.';
+    element('package-message').textContent = option?.value && option.dataset.installable !== 'yes' ? 'An installation package is not available for this release.' : '';
+  }
+  function render(data, refreshReleases = false) {
+    const initial = state === null;
+    state = data;
+    element('installed').textContent = data.installed;
+    element('latest').textContent = data.latest?.version || (data.checked ? 'No releases published' : 'Not checked');
+    element('previous').textContent = data.previous || 'None yet';
+    element('availability').textContent = data.available ? 'Update available' : data.latest ? 'Up to date' : data.checked ? 'No releases published' : 'Check for releases';
+    element('availability').className = `pill ${data.available ? 'info' : 'neutral'}`;
+    if (initial || refreshReleases || release.options.length === 1 && data.releases.length) {
+      const selected = release.value;
+      release.replaceChildren();
+      data.releases.forEach(item => {
+        const option = document.createElement('option'); option.value = item.version; option.textContent = item.version;
+        option.dataset.installable = item.installable ? 'yes' : 'no'; option.dataset.notes = item.notes; release.append(option);
+      });
+      if (data.releases.some(item => item.version === selected)) release.value = selected;
+    }
+    pill(element('progress'), localMessage || data.status.message, localMessage ? 'danger' : data.busy ? 'info' : data.status.phase === 'success' ? 'success' : ['failed','error'].includes(data.status.phase) ? 'danger' : 'neutral');
+    const body = element('history-body'); body.replaceChildren();
+    data.history.forEach(row => {
+      const tr = document.createElement('tr');
+      const date = new Date(row.date);
+      [Number.isNaN(date.getTime()) ? row.date : new Intl.DateTimeFormat(undefined, {dateStyle:'medium',timeStyle:'medium'}).format(date), row.action === 'install' ? 'Install' : 'Rollback', row.previous, row.version].forEach(text => {
+        const td = document.createElement('td'); td.textContent = text; tr.append(td);
+      });
+      const result = document.createElement('td'); pill(result, row.success ? 'Success' : 'Failed', row.success ? 'success' : 'danger');
+      const message = document.createElement('p'); message.textContent = row.message; result.append(message); tr.append(result); body.append(tr);
+    });
+    if (!data.history.length) { const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.textContent='No software changes recorded.'; tr.append(td); body.append(tr); }
+    controls();
+  }
+  async function post(path, fields = {}) {
+    const response = await fetch(path, {method:'POST', body:new URLSearchParams({csrf:updateRoot.dataset.csrf, ...fields})});
+    if (response.redirected) { location.href = response.url; throw new Error('Please sign in again.'); }
+    const reply = await response.json();
+    if (!response.ok || !reply.ok) throw new Error(reply.message || 'The operation could not be completed.');
+    return reply;
+  }
+  async function poll() {
+    try {
+      const response = await fetch('/updates/status');
+      if (response.redirected) { location.href=response.url; return; }
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      if (!waiting) render(data);
+    } catch (_) { pill(element('progress'), 'Reconnecting to the dashboard…', 'warning'); }
+    setTimeout(poll, 2000);
+  }
+  element('check').addEventListener('click', async () => {
+    waiting=true; localMessage=null; controls(); pill(element('progress'), 'Checking releases…', 'info');
+    try { const reply=await post('/updates/check'); render(reply.update,true); }
+    catch (error) { localMessage=error.message; pill(element('progress'), error.message, 'danger'); }
+    finally { waiting=false; controls(); }
+  });
+  release.addEventListener('change',controls);
+  for (const action of ['install','rollback']) element(action).addEventListener('click', () => {
+    requested={action, version:release.value};
+    element('modal-title').textContent=action === 'install' ? `Install ${release.value}?` : `Restore ${state.previous}?`;
+    element('modal-message').textContent='The display and dashboard will restart. The current timing session will end. Your settings and logos will be kept.';
+    dialog.showModal();
+  });
+  element('cancel').addEventListener('click',()=>dialog.close());
+  element('confirm').addEventListener('click',async () => {
+    dialog.close(); waiting=true; localMessage=null; controls();
+    try { await post('/updates/action',{...requested,confirm:'yes'}); pill(element('progress'),'Software operation started…','info'); }
+    catch(error) { localMessage=error.message; pill(element('progress'),error.message,'danger'); }
+    finally { waiting=false; controls(); }
+  });
+  poll();
+}
+
+if (document.querySelector('[data-lynx-status]')) {
+  const updateLynx = async () => {
+    try {
+      const response = await fetch('/api/finishlynx');
+      if (!response.ok) throw new Error('Status unavailable');
+      const state = await response.json();
+      const pill = document.querySelector('[data-lynx-status]');
+      pill.textContent = state.label;
+      pill.className = 'pill ' + state.tone;
+      document.querySelector('[data-lynx-running]').textContent = state.running ? 'Running' : 'Stopped';
+      document.querySelector('[data-lynx-event]').textContent = state.event || 'Waiting for event';
+      document.querySelector('[data-lynx-clock]').textContent = state.clock || (state.event ? '0:00.0' : 'Waiting for time');
+    } catch (_) {
+      document.querySelector('[data-lynx-status]').textContent = 'Unavailable';
+    }
+  };
+  updateLynx();
+  setInterval(updateLynx, 500);
+}
+
+
+function renderClockPreview(next) {
+  const image = document.getElementById('clock-preview-image');
+  const empty = document.getElementById('clock-preview-empty');
+  document.getElementById('clock-current-mode').textContent = next.connected ? next.mode || '—' : '—';
+  if (next.connected && next.frame) {
+    const source = 'data:image/png;base64,' + next.frame;
+    if (image.getAttribute('src') !== source) image.src = source;
+    image.hidden = false; empty.hidden = true;
+  } else {
+    image.hidden = true; image.removeAttribute('src'); empty.hidden = false;
+    empty.textContent = next.connected ? 'Waiting for the display…' : 'Clock display unavailable';
+  }
+}
+
+const clockRoot = document.getElementById('clock-controls');
+if (clockRoot) {
+  const element = id => document.getElementById(`clock-${id}`);
+  const modeButtons = [...clockRoot.querySelectorAll('[data-clock-mode]')];
+  let state = null, waiting = false;
+  function controls() {
+    const connected = !!state?.connected;
+    const timed = ['Count Up', 'Count Down', 'Round Counter'].includes(state?.mode);
+    element('time-form').hidden = !timed;
+    element('lap-controls').hidden = state?.mode !== 'Lap Counter';
+    element('finishlynx-link').hidden = state?.mode !== 'FinishLynx';
+    clockRoot.querySelectorAll('button').forEach(button => { button.disabled = waiting || !connected; });
+    element('start').disabled = waiting || !connected || !timed || !['ready','paused'].includes(state?.phase) || (state?.mode === 'Count Down' && state.value === 0);
+    element('pause').disabled = waiting || !connected || !timed || state?.phase !== 'running';
+    modeButtons.forEach(button => { button.setAttribute('aria-pressed', String(button.dataset.clockMode === state?.mode)); });
+  }
+  function render(next) {
+    state = next;
+    const labels = {menu:'Select a mode',entry:'Set time',ready:'Ready',running:'Running',paused:'Paused',unavailable:'Disconnected'};
+    const tone = !next.connected ? 'warning' : next.phase === 'running' ? 'success' : 'info';
+    element('state').textContent = next.connected ? (labels[next.phase] || 'Connected') : 'Disconnected';
+    element('state').className = `pill ${tone}`;
+    renderClockPreview(next);
+    if (next.mode === 'Lap Counter' && next.value !== null) element('lap-number').textContent = next.value;
+    controls();
+  }
+  async function refresh() {
+    const response = await fetch('/api/controller/status');
+    if (response.redirected) { location.href = response.url; return; }
+    if (!response.ok) throw new Error();
+    const next = await response.json();
+    if (!waiting) render(next);
+  }
+  async function send(action, mode = state?.mode, fields = {}) {
+    if (waiting) return;
+    waiting = true; controls(); element('result').textContent = 'Working…'; element('result').className = '';
+    try {
+      const response = await fetch('/api/controller/mode', {method:'POST', body:new URLSearchParams({csrf:clockRoot.dataset.csrf, action, mode, ...fields})});
+      if (response.redirected) { location.href = response.url; return; }
+      const reply = await response.json();
+      element('result').textContent = reply.message;
+      element('result').className = `pill ${response.ok && reply.ok ? 'success' : 'danger'}`;
+    } catch (_) {
+      element('result').textContent = 'Change could not be confirmed. Check the clock before trying again.';
+      element('result').className = 'pill warning';
+    } finally {
+      waiting = false;
+      try { await refresh(); } catch (_) { render({connected:false}); }
+      controls();
+    }
+  }
+  modeButtons.forEach(button => button.addEventListener('click', () => send('select', button.dataset.clockMode)));
+  element('time-form').addEventListener('submit', event => { event.preventDefault(); if (event.target.reportValidity()) send('set_time', state.mode, {time:element('time').value}); });
+  element('start').addEventListener('click', () => send('start'));
+  element('pause').addEventListener('click', () => send('pause'));
+  clockRoot.querySelectorAll('[data-clock-action]').forEach(button => button.addEventListener('click', () => send(button.dataset.clockAction)));
+  element('lap-form').addEventListener('submit', event => { event.preventDefault(); if (event.target.reportValidity()) send('lap_set', 'Lap Counter', {number:element('lap-input').value}); });
+  async function poll() {
+    try { await refresh(); } catch (_) { if (!waiting) render({connected:false}); }
+    setTimeout(poll, 350);
+  }
+  controls(); poll();
+}
+
+
+const finishLynxButton = document.getElementById('activate-finishlynx');
+if (finishLynxButton) {
+  let working = false;
+  const result = document.getElementById('finishlynx-mode-result');
+  async function updateMode() {
+    try {
+      const response = await fetch('/api/controller/status');
+      if (response.redirected) { location.href = response.url; return; }
+      if (!response.ok) throw new Error();
+      const state = await response.json();
+      if (!working) {
+        const active = state.connected && state.mode === 'FinishLynx' && state.phase === 'running';
+        finishLynxButton.disabled = active;
+        finishLynxButton.textContent = active ? 'FinishLynx mode active' : 'Use FinishLynx mode';
+      }
+    } catch (_) {
+      if (!working) { finishLynxButton.disabled = false; finishLynxButton.textContent = 'Use FinishLynx mode'; }
+    }
+  }
+  finishLynxButton.addEventListener('click', async () => {
+    if (working) return;
+    working = true; finishLynxButton.disabled = true; finishLynxButton.textContent = 'Switching…';
+    result.textContent = ''; result.className = '';
+    try {
+      const response = await fetch('/api/controller/mode', {method:'POST', body:new URLSearchParams({csrf:finishLynxButton.dataset.csrf, action:'select', mode:'FinishLynx'})});
+      if (response.redirected) { location.href = response.url; return; }
+      const reply = await response.json();
+      result.textContent = response.ok && reply.ok ? 'Clock set to FinishLynx.' : reply.message;
+      result.className = `pill ${response.ok && reply.ok ? 'success' : 'danger'}`;
+    } catch (_) {
+      result.textContent = 'Mode could not be confirmed. Check the clock and try again.';
+      result.className = 'pill warning';
+    } finally {
+      working = false; finishLynxButton.disabled = false; finishLynxButton.textContent = 'Use FinishLynx mode';
+      await updateMode();
+    }
+  });
+  const pollMode = async () => { await updateMode(); setTimeout(pollMode, 1500); };
+  pollMode();
 }

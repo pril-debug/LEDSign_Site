@@ -37,8 +37,16 @@ class DisplaySettings(unittest.TestCase):
             self.assertEqual(response.status_code,503)
             self.assertFalse(response.json['ok'])
 
-    def test_editor_controls(self):
+    def test_display_redirects_and_logos_share_one_settings_section(self):
         self.login()
-        page=self.client.get('/display').data
-        for label in (b'Panel width',b'Columns per side',b'Test Mapping',b'panel-mapping',b'display-dialog'):
-            self.assertIn(label,page)
+        response = self.client.get('/display')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.location, '/dashboard')
+        for path in ('/dashboard', '/settings', '/finishlynx'):
+            self.assertNotIn(b'href="/display"', self.client.get(path).data)
+        settings = self.client.get('/settings').data
+        for label in (b'Clock logo', b'logo-settings-layout', b'/logo/upload', b'Default logo', b'Customer logo'):
+            self.assertIn(label, settings)
+        self.assertNotIn(b'upload-card', settings)
+        self.assertNotIn(b'logo-card', settings)
+        self.assertIn(b'updates-settings', settings)

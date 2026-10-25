@@ -1,0 +1,16 @@
+{% extends 'base.html' %}{% from 'components.html' import heading,pill with context %}
+{% block content %}
+{{ heading('ADMINISTRATION','Software Updates','Check and install releases when you choose.') }}
+<div id="software-updates" data-csrf="{{ csrf }}">
+<section class="card"><div class="card-header"><h2>Application software</h2><button id="update-check" class="button secondary">Check for updates</button></div>
+<div class="card-body"><div class="update-versions"><div><span>Installed version</span><strong id="update-installed">{{ update.installed }}</strong></div><div><span>Latest release</span><strong id="update-latest">{{ update.latest.version if update.latest else 'Not checked' }}</strong></div><div><span>Previous version</span><strong id="update-previous">{{ update.previous or 'None yet' }}</strong></div></div>
+<p><span id="update-availability" class="pill neutral">{% if update.available %}Update available{% elif update.latest %}Up to date{% else %}Check for releases{% endif %}</span></p>
+<label for="update-release">Release to install</label><select id="update-release"><option value="">Check for releases</option>{% for release in update.releases %}<option value="{{ release.version }}" data-installable="{{ 'yes' if release.installable else 'no' }}" data-notes="{{ release.notes }}">{{ release.version }}</option>{% endfor %}</select>
+<h3 class="update-notes-heading">Release notes</h3><p id="update-notes" class="release-notes">{% if update.latest %}{{ update.latest.notes or 'No release notes provided.' }}{% else %}No releases checked yet.{% endif %}</p>
+<p id="update-package-message" class="help"></p>
+<div class="modal-actions"><button id="update-install" class="button" disabled>Install Update</button><button id="update-rollback" class="button secondary" {% if not update.previous or update.busy %}disabled{% endif %}>Rollback</button></div>
+<p id="update-progress" role="status" aria-live="polite"><span class="pill neutral">{{ update.status.message }}</span></p></div></section>
+<section class="card update-history"><div class="card-header"><h2>Update history</h2></div><div class="card-body"><div class="table-wrap"><table><thead><tr><th>Date and time</th><th>Action</th><th>Previous version</th><th>New version</th><th>Result</th></tr></thead><tbody id="update-history-body">{% for row in update.history %}<tr><td><time datetime="{{ row.date }}" data-local-time>{{ row.date }}</time></td><td>{{ 'Install' if row.action == 'install' else 'Rollback' }}</td><td>{{ row.previous }}</td><td>{{ row.version }}</td><td>{{ pill('Success' if row.success else 'Failed', 'success' if row.success else 'danger') }}<p>{{ row.message }}</p></td></tr>{% else %}<tr><td colspan="5">No software changes recorded.</td></tr>{% endfor %}</tbody></table></div></div></section>
+<dialog id="update-modal" class="confirmation-modal" aria-labelledby="update-modal-title"><div class="modal-content"><h2 id="update-modal-title"></h2><p id="update-modal-message"></p><div class="modal-actions"><button id="update-cancel" class="button secondary" autofocus>Cancel</button><button id="update-confirm" class="button">Continue</button></div></div></dialog>
+</div>
+{% endblock %}
