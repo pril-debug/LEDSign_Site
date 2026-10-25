@@ -20,3 +20,29 @@
 .network-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}.ethernet-connection>.card-header{background:#f0f4ff}.wifi-connection>.card-header{background:#edf9f5}.connection-facts h3,.connection-settings h3{font-size:16px;margin-bottom:18px}.connection-facts dl{display:grid;grid-template-columns:1fr 1fr;gap:18px 22px;margin:0}.connection-facts dt{font-size:12px;color:var(--muted);margin-bottom:5px}.connection-facts dd{font-size:14px;font-weight:550;overflow-wrap:anywhere;color:var(--ink)}.connection-facts .ipv6-value{grid-column:1/-1}.connection-settings{border-top:1px solid var(--line);padding-top:25px;margin-top:27px}.connection-settings label{font-size:13px}.connection-settings input,.connection-settings select{font-size:14px}.connection-settings .static-fields{border:0;padding:0}.wifi-settings-heading{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:24px}.wifi-settings-heading h3{margin:0}.connection-settings .table-wrap{margin-top:0}
 @media(max-width:1050px){.network-columns{grid-template-columns:1fr}.connection-facts dl{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:700px){.connection-facts dl{grid-template-columns:1fr 1fr}.network-columns{gap:20px}.connection-facts dt{font-size:12px}.connection-facts dd{font-size:14px}}
+
+.display-editor { grid-column: 1 / -1; background: #fff; }
+.display-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:16px; margin-bottom:18px; }
+.panel-map-grid { display:grid; gap:12px; overflow-x:auto; padding:4px 0 12px; }
+.panel-map-tile { min-width:150px; background:#f8faff; border:1px solid #dce4f2; border-radius:12px; padding:14px; }
+.panel-map-tile label { display:block; margin-top:10px; }
+.panel-map-tile input,.panel-map-tile select { width:100%; }
+#display-result { margin-top:16px; }
+.map-cols-1 { grid-template-columns:repeat(1,minmax(150px,1fr)); }
+.map-cols-2 { grid-template-columns:repeat(2,minmax(150px,1fr)); }
+.map-cols-3 { grid-template-columns:repeat(3,minmax(150px,1fr)); }
+.map-cols-4 { grid-template-columns:repeat(4,minmax(150px,1fr)); }
+.map-cols-5 { grid-template-columns:repeat(5,minmax(150px,1fr)); }
+.map-cols-6 { grid-template-columns:repeat(6,minmax(150px,1fr)); }
+.map-cols-7 { grid-template-columns:repeat(7,minmax(150px,1fr)); }
+.map-cols-8 { grid-template-columns:repeat(8,minmax(150px,1fr)); }
+.map-cols-9 { grid-template-columns:repeat(9,minmax(150px,1fr)); }
+.map-cols-10 { grid-template-columns:repeat(10,minmax(150px,1fr)); }
+.map-cols-11 { grid-template-columns:repeat(11,minmax(150px,1fr)); }
+.map-cols-12 { grid-template-columns:repeat(12,minmax(150px,1fr)); }
+.map-cols-13 { grid-template-columns:repeat(13,minmax(150px,1fr)); }
+.map-cols-14 { grid-template-columns:repeat(14,minmax(150px,1fr)); }
+.map-cols-15 { grid-template-columns:repeat(15,minmax(150px,1fr)); }
+.map-cols-16 { grid-template-columns:repeat(16,minmax(150px,1fr)); }
+
+#display-dialog [hidden] { display:none !important; }

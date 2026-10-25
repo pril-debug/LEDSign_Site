@@ -12,6 +12,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from PIL import Image, UnidentifiedImageError
 import device
 import activity
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from display_layout import saved_layout, validate_layout
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 CONF_PATH = APP_ROOT / 'config/settings.json'
@@ -114,7 +117,39 @@ def dashboard():
 
 @app.get('/display')
 def display():
-    return render_template('display.html', title='Display', conf=load_conf())
+    return render_template('display.html', title='Display', conf=load_conf(), layout=saved_layout(load_conf()))
+
+
+@app.post('/display/settings')
+def display_settings():
+    try:
+        layout = validate_layout(json.loads(request.form.get('layout', 'null')))
+        action = request.form.get('action')
+        if action == 'save':
+            conf = load_conf()
+            conf['display_layout'] = layout
+            save_conf(conf)
+            message = 'Display settings saved. Apply them when ready.'
+        elif action in ('apply', 'test'):
+            result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/web_display.py'],
+                                    input=json.dumps(dict(action=action, layout=layout)),
+                                    capture_output=True, text=True, timeout=95)
+            try:
+                reply = json.loads(result.stdout)
+            except (ValueError, TypeError):
+                reply = {}
+            if result.returncode or not reply.get('ok'):
+                return dict(ok=False, message=reply.get('error', 'The display controller is unavailable. Ask your installer to check it.')), 503
+            message = ('Mapping test completed. Previous display settings restored.' if action == 'test'
+                       else 'Display settings applied. The controller has restarted.')
+        else:
+            raise ValueError('Choose Save, Apply or Test Mapping.')
+        return dict(ok=True, message=message)
+    except (ValueError, TypeError):
+        return dict(ok=False, message='Check the panel sizes and assign each chain position and display position exactly once.'), 400
+    except (OSError, subprocess.TimeoutExpired):
+        app.logger.exception('Display settings operation failed')
+        return dict(ok=False, message='Display operation could not be confirmed. Check the controller before trying again.'), 503
 
 
 @app.get('/settings')
