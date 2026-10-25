@@ -202,12 +202,29 @@ def display_settings():
 
 @app.get('/updates')
 def software_updates():
-    return render_template('updates.html', title='Software Updates', update=updates.snapshot())
+    snapshot = updates.snapshot()
+    if request.args.get('view') == 'progress':
+        action = request.args.get('action', snapshot['status'].get('action', 'install'))
+        version = request.args.get('version', snapshot['status'].get('version', ''))
+        operation = request.args.get('operation', snapshot['status'].get('operation_id', ''))
+        if action not in ('install', 'rollback') or not updates.TAG.fullmatch(version):
+            return redirect(url_for('software_updates'))
+        import re
+        if operation and not re.fullmatch(r'[0-9a-f]{32}', operation):
+            return redirect(url_for('software_updates'))
+        return render_template('update_progress.html', title='Update progress', action=action,
+                               target_version=version, operation=operation)
+    return render_template('updates.html', title='Software Updates', update=snapshot)
 
 
 @app.get('/updates/status')
 def software_update_status():
     return updates.snapshot()
+
+
+@app.get('/updates/connection')
+def software_update_connection():
+    return updates.connection()
 
 
 @app.post('/updates/check')
@@ -231,8 +248,10 @@ def software_update_action():
                                       for item in updates.snapshot()['releases']):
         return dict(ok=False, message='Check releases and choose an available update.'), 400
     try:
-        updates.start(action, version)
-        return dict(ok=True, message='Software operation started.'), 202
+        if action == 'install' and not updates.connection()['connected']:
+            return dict(ok=False, message='Cannot reach the update service. Check the clock’s internet connection and try again.'), 503
+        reply = updates.start(action, version)
+        return dict(ok=True, message='Software operation started.', operation_id=reply.get('operation_id') if isinstance(reply, dict) else None), 202
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         return dict(ok=False, message=str(error) if isinstance(error, ValueError)
                     else 'The software operation could not start.'), 503

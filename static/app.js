@@ -161,7 +161,7 @@ if (updateRoot) {
   const element = name => document.getElementById(`update-${name}`);
   const release = element('release');
   const dialog = element('modal');
-  let state = null, requested = null, waiting = false, checking = false, localMessage = null;
+  let state = null, requested = null, waiting = false, checking = false, localMessage = null, connected = null;
   function pill(target, text, tone) {
     const span = document.createElement('span'); span.className = `pill ${tone}`;
     span.textContent = text; target.replaceChildren(span);
@@ -171,7 +171,8 @@ if (updateRoot) {
     element('check').setAttribute('aria-busy', String(checking));
     element('check-label').textContent = checking ? 'Checking…' : 'Check for updates';
     const option = release.selectedOptions[0];
-    element('install').disabled = waiting || !state?.configured || state.busy || !option?.value || option.dataset.installable !== 'yes' || option.value === state.installed;
+    element('install').disabled = connected !== true || waiting || !state?.configured || state.busy || !option?.value || option.dataset.installable !== 'yes' || option.value === state.installed;
+    element('confirm').disabled = waiting || (requested?.action === 'install' && connected !== true);
     element('rollback').disabled = waiting || !state?.configured || state.busy || !state.previous;
     element('check').disabled = waiting || !!state?.busy;
     release.disabled = waiting || !!state?.busy;
@@ -192,6 +193,9 @@ if (updateRoot) {
     element('check-result').textContent = !localMessage && data.checked && !data.available ? 'No updates available.' : '';
     element('availability').textContent = data.available ? 'Update available' : data.latest ? 'Up to date' : data.checked ? 'No releases published' : 'Check for releases';
     element('availability').className = `pill ${data.available ? 'info' : 'neutral'}`;
+    const progressLink = element('view-progress');
+    progressLink.hidden = !data.busy;
+    if (data.busy) progressLink.href = progressURL(data.status.action || 'install', data.status.version || release.value, data.status.operation_id);
     if (initial || refreshReleases || release.options.length === 1 && data.releases.length) {
       const selected = release.value;
       release.replaceChildren();
@@ -215,6 +219,27 @@ if (updateRoot) {
     if (!data.history.length) { const tr=document.createElement('tr'), td=document.createElement('td'); td.colSpan=5; td.textContent='No software changes recorded.'; tr.append(td); body.append(tr); }
     controls();
   }
+  function progressURL(action, version, operation) {
+    return '/updates?' + new URLSearchParams({view:'progress', action, version, ...(operation ? {operation} : {})});
+  }
+  async function checkConnection() {
+    try {
+      const response = await fetch('/updates/connection');
+      if (response.redirected) { location.href=response.url; return; }
+      if (!response.ok) throw new Error();
+      const data = await response.json(); connected = data.connected === true;
+      element('connection').textContent = connected ? 'Connected' : 'Update service unavailable';
+      element('connection').className = `pill ${connected ? 'success' : 'warning'}`;
+      element('connection-message').textContent = connected ? '' : data.message;
+    } catch (_) {
+      connected = false;
+      element('connection').textContent = 'Update service unavailable';
+      element('connection').className = 'pill warning';
+      element('connection-message').textContent = 'Check the clock’s internet connection and try again.';
+    }
+    controls();
+  }
+  async function pollConnection() { await checkConnection(); setTimeout(pollConnection, 30000); }
   async function post(path, fields = {}) {
     const response = await fetch(path, {method:'POST', body:new URLSearchParams({csrf:updateRoot.dataset.csrf, ...fields})});
     if (response.redirected) { location.href = response.url; throw new Error('Please sign in again.'); }
@@ -234,7 +259,7 @@ if (updateRoot) {
   }
   element('check').addEventListener('click', async () => {
     waiting=true; checking=true; localMessage=null; element('check-result').textContent=''; controls(); pill(element('progress'), 'Checking for updates…', 'info');
-    try { const reply=await post('/updates/check'); render(reply.update,true); }
+    try { const reply=await post('/updates/check'); render(reply.update,true); await checkConnection(); }
     catch (error) { localMessage=error.message; element('check-result').textContent=''; pill(element('progress'), error.message, 'danger'); }
     finally { waiting=false; checking=false; controls(); }
   });
@@ -242,17 +267,23 @@ if (updateRoot) {
   for (const action of ['install','rollback']) element(action).addEventListener('click', () => {
     requested={action, version:release.value};
     element('modal-title').textContent=action === 'install' ? `Install ${release.value}?` : `Restore ${state.previous}?`;
-    element('modal-message').textContent='The display and dashboard will restart. The current timing session will end. Your settings and logos will be kept.';
-    dialog.showModal();
+    element('modal-message').textContent=action === 'install' ? 'This ends the current timing session and restarts the clock and dashboard. Keep power and internet connected. You’ll see each installation step on the next page.' : 'Restore the saved version and restart the clock and dashboard? This ends the current timing session. Keep the clock powered on.';
+    element('confirm').textContent = action === 'install' ? 'Install update' : 'Restore version';
+    controls(); dialog.showModal();
   });
   element('cancel').addEventListener('click',()=>dialog.close());
   element('confirm').addEventListener('click',async () => {
+    if (waiting) return;
     dialog.close(); waiting=true; localMessage=null; controls();
-    try { await post('/updates/action',{...requested,confirm:'yes'}); pill(element('progress'),'Software operation started…','info'); }
+    try {
+      const target = requested.action === 'rollback' ? state.previous : requested.version;
+      const reply = await post('/updates/action',{...requested,confirm:'yes'});
+      location.href = progressURL(requested.action, target, reply.operation_id);
+    }
     catch(error) { localMessage=error.message; pill(element('progress'),error.message,'danger'); }
     finally { waiting=false; controls(); }
   });
-  poll();
+  poll(); pollConnection();
 }
 
 if (document.querySelector('[data-lynx-status]')) {
@@ -394,4 +425,91 @@ if (finishLynxButton) {
   });
   const pollMode = async () => { await updateMode(); setTimeout(pollMode, 1500); };
   pollMode();
+}
+
+const operationRoot = document.getElementById('update-operation');
+if (operationRoot) {
+  const element = name => document.getElementById(`operation-${name}`);
+  const target = operationRoot.dataset.version;
+  const operation = operationRoot.dataset.operation;
+  const steps = [...operationRoot.querySelectorAll('[data-operation-step]')];
+  const phases = steps.map(step => step.dataset.operationStep);
+  let previousPhase = 'queued', terminal = false, reconnects = 0;
+  const titles = {queued:'Getting your update ready', downloading:'Downloading your update',
+    validating:'Verifying the installation package', preparing:'Preparing your FlexClock',
+    installing:'Applying the selected version', restarting:'Restarting your FlexClock',
+    verifying:'Checking the clock and dashboard', restoring:'Restoring the previous version'};
+  function status(label, tone) {
+    element('state').textContent = label; element('state').className = `pill ${tone}`;
+  }
+  function symbol(kind) {
+    const root = element('symbol'); root.replaceChildren(); root.className = `operation-symbol ${kind}`;
+    if (kind === 'success' || kind === 'danger') root.textContent = kind === 'success' ? '✓' : '!';
+    else { const spinner = document.createElement('span'); spinner.className = 'checking-spinner'; spinner.setAttribute('aria-hidden','true'); root.append(spinner); }
+  }
+  function renderSteps(phase, complete = false, failed = false) {
+    const index = phase === 'queued' ? 0 : phases.indexOf(phase);
+    steps.forEach((step, number) => {
+      const done = complete || index >= 0 && number < index;
+      const current = !complete && number === index;
+      step.className = done ? 'complete' : current ? failed ? 'failed' : 'active' : '';
+      step.querySelector('.operation-step-number').textContent = done ? '✓' : number + 1;
+      step.querySelector('.operation-step-state').textContent = done ? 'Complete' : current ? failed ? 'Stopped' : 'In progress' : 'Waiting';
+      if (current) step.setAttribute('aria-current','step'); else step.removeAttribute('aria-current');
+    });
+  }
+  function render(data) {
+    reconnects = 0;
+    const report = data.status || {};
+    const matching = operation ? report.operation_id === operation : report.version === target;
+    if (!matching) {
+      status('Not active','warning'); symbol('danger');
+      element('title').textContent = 'This update is not active';
+      element('message').textContent = data.busy ? 'A different software operation is running. Return to Software Updates to view its progress.' : `The clock is currently running ${data.installed}. Return to Software Updates to check its status.`;
+      element('return').hidden = false; element('power-note').hidden = true;
+      terminal = true; return;
+    }
+    const phase = report.phase;
+    if (phase === 'success') {
+      terminal = true;
+      if (data.installed === target) {
+        status('Complete','success'); symbol('success'); renderSteps(phase,true);
+        element('title').textContent = operationRoot.dataset.action === 'rollback' ? 'Previous version restored' : 'Update complete';
+        element('message').textContent = `Your FlexClock is running version ${target}. The clock and dashboard passed their checks.`;
+      } else {
+        status('Needs attention','danger'); symbol('danger');
+        element('title').textContent = 'Installed version could not be confirmed';
+        element('message').textContent = `The clock reports version ${data.installed}. Check Software Updates before trying again.`;
+      }
+      element('return').hidden = false; element('power-note').hidden = true; return;
+    }
+    if (['failed','error'].includes(phase)) {
+      terminal = true; status(phase === 'error' ? 'Needs attention' : 'Not installed','danger'); symbol('danger');
+      renderSteps(report.failed_phase || previousPhase,false,true);
+      element('title').textContent = phase === 'error' ? 'Your FlexClock needs attention' : 'The update could not be completed';
+      element('message').textContent = report.message || 'Check Software Updates before trying again.';
+      element('return').hidden = false; element('power-note').hidden = phase !== 'error'; return;
+    }
+    previousPhase = phase; symbol('info');
+    status(phase === 'restoring' ? 'Restoring previous version' : 'In progress',phase === 'restoring' ? 'warning' : 'info');
+    element('title').textContent = titles[phase] || 'Waiting for the clock';
+    element('message').textContent = report.message || 'The clock will report the next step automatically.';
+    renderSteps(phase);
+  }
+  async function pollOperation() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    try {
+      const response = await fetch('/updates/status', {signal:controller.signal});
+      if (response.redirected) { location.href = response.url; return; }
+      if (!response.ok) throw new Error();
+      render(await response.json());
+    } catch (_) {
+      reconnects++; status('Reconnecting','warning'); symbol('info');
+      element('title').textContent = 'Reconnecting to your FlexClock';
+      element('message').textContent = reconnects < 15 ? 'The dashboard may be restarting. Keep your FlexClock powered on; this page will reconnect automatically.' : 'Still waiting for your FlexClock. Check your connection to the clock and keep it powered on.';
+    } finally { clearTimeout(timeout); }
+    if (!terminal) setTimeout(pollOperation, 1500);
+  }
+  pollOperation();
 }

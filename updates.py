@@ -38,7 +38,7 @@ def snapshot():
     version = installed.get('version', 'Not configured')
     return dict(checked=bool(cached), checked_at=cached.get('checked_at'), configured=bool(installed), installed=version,
                 previous=installed.get('previous_version'), status=status,
-                busy=status.get('phase') in ('queued', 'downloading', 'preparing', 'installing', 'verifying', 'restoring'),
+                busy=status.get('phase') in ('queued', 'downloading', 'validating', 'preparing', 'installing', 'restarting', 'verifying', 'restoring'),
                 releases=releases, latest=releases[0] if releases else None,
                 available=bool(releases and newer(releases[0]['version'], version)),
                 history=list(reversed(read(STATE/'history.json', []))))
@@ -65,6 +65,21 @@ def check():
     return snapshot()
 
 
+
+def connection():
+    checked_at = datetime.now(timezone.utc).isoformat()
+    request = urllib.request.Request('https://github.com/pril-debug/LEDSign/releases',
+                                     method='HEAD', headers={'User-Agent':'FlexClock-Dashboard'})
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            connected = 200 <= response.status < 400
+    except (OSError, ValueError):
+        connected = False
+    return dict(connected=connected, checked_at=checked_at,
+                message='Update service connected.' if connected else
+                'Cannot reach the update service. Check the clock’s internet connection and try again.')
+
+
 def start(action, version):
     result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/software_updates.py'],
                             input=json.dumps(dict(action=action, version=version)),
@@ -76,3 +91,4 @@ def start(action, version):
     if result.returncode or not data.get('ok'):
         known = ('An update is already in progress.', 'No previous version is available.', 'Choose a versioned release.')
         raise ValueError(data.get('message') if data.get('message') in known else 'The software operation could not start.')
+    return data

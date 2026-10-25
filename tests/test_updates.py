@@ -18,7 +18,8 @@ class SoftwareUpdates(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.conf = self.root/'settings.json'
         self.conf.write_text(json.dumps(dict(auth=dict(username='admin', password_hash=generate_password_hash('secret-password')))))
-        self.patches = [patch.object(web, 'CONF_PATH', self.conf), patch.object(updates, 'STATE', self.root),
+        self.probe_connection = updates.connection
+        self.patches = [patch.object(updates, 'connection', return_value=dict(connected=True, message='Connected')), patch.object(web, 'CONF_PATH', self.conf), patch.object(updates, 'STATE', self.root),
                         patch.object(updates, 'CACHE', self.root/'cache.json')]
         for p in self.patches:
             p.start()
@@ -132,3 +133,49 @@ class SoftwareUpdates(unittest.TestCase):
         with patch.object(updates.urllib.request,'urlopen',side_effect=OSError('offline')):
             self.assertEqual(self.post('/updates/check').status_code,503)
         self.assertEqual(updates.CACHE.read_bytes(),before)
+
+    def test_offline_install_is_blocked_and_rollback_stays_available(self):
+        self.login()
+        (self.root/'cache.json').write_text(json.dumps(dict(releases=[dict(version='1.43',installable=True,notes='Update')])) )
+        with patch.object(updates,'connection',return_value=dict(connected=False)), patch.object(updates,'start') as start:
+            response=self.post('/updates/action',action='install',version='1.43',confirm='yes')
+            self.assertEqual(response.status_code,503)
+            self.assertIn('internet',response.json['message'])
+            start.assert_not_called()
+            self.assertEqual(self.post('/updates/action',action='rollback',confirm='yes').status_code,202)
+            start.assert_called_once_with('rollback','')
+
+    def test_connection_probe_runs_on_device_and_handles_network_failure(self):
+        from unittest.mock import MagicMock
+        response=MagicMock()
+        response.__enter__.return_value.status=200
+        with patch.object(updates.urllib.request,'urlopen',return_value=response) as network:
+            self.assertTrue(self.probe_connection()['connected'])
+            request=network.call_args.args[0]
+            self.assertEqual(request.get_method(),'HEAD')
+            self.assertEqual(request.full_url,'https://github.com/pril-debug/LEDSign/releases')
+            self.assertEqual(network.call_args.kwargs['timeout'],4)
+        with patch.object(updates.urllib.request,'urlopen',side_effect=OSError('offline')):
+            self.assertFalse(self.probe_connection()['connected'])
+        self.assertEqual(self.client.get('/updates/connection').status_code,302)
+        self.login()
+        self.assertTrue(self.client.get('/updates/connection').json['connected'])
+
+    def test_progress_page_and_operation_receipt(self):
+        self.login()
+        (self.root/'cache.json').write_text(json.dumps(dict(releases=[dict(version='1.43',installable=True,notes='Update')])) )
+        token='a'*32
+        with patch.object(updates,'start',return_value=dict(ok=True,operation_id=token)):
+            response=self.post('/updates/action',action='install',version='1.43',confirm='yes')
+        self.assertEqual(response.json['operation_id'],token)
+        response=self.client.get('/updates?view=progress&version=1.43&operation='+token)
+        self.assertEqual(response.status_code,200)
+        self.assertIn(b'Keep your FlexClock powered on.',response.data)
+        self.assertEqual(response.data.count(b'data-operation-step='),6)
+        self.assertIn(b'data-operation="'+token.encode()+b'"',response.data)
+        self.assertNotIn(b'update-install"',response.data)
+        for query in ('version=main','version=1.43&operation=bad','version=1.43&action=delete'):
+            self.assertEqual(self.client.get('/updates?view=progress&'+query).location,'/updates')
+        for phase in ('validating','restarting'):
+            (self.root/'status.json').write_text(json.dumps(dict(phase=phase,operation_id=token)))
+            self.assertTrue(updates.snapshot()['busy'])

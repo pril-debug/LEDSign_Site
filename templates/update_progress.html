@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% from 'components.html' import heading,icon with context %}
+{% block content %}
+{{ heading('SOFTWARE UPDATES','Update progress','') }}
+<section class="card update-operation" id="update-operation" data-action="{{ action }}" data-version="{{ target_version }}" data-operation="{{ operation }}">
+  <div class="card-header"><h2>{{ 'Installing' if action == 'install' else 'Restoring' }} version {{ target_version }}</h2><span id="operation-state" class="pill info">Connecting</span></div>
+  <div class="card-body operation-layout">
+    <div class="operation-summary">
+      <span id="operation-symbol" class="operation-symbol"><span class="checking-spinner" aria-hidden="true"></span></span>
+      <h2 id="operation-title">Connecting to your FlexClock</h2>
+      <p id="operation-message" role="status" aria-live="polite">Waiting for the clock to report its progress.</p>
+      <div class="operation-version"><span>Selected version</span><strong>{{ target_version }}</strong></div>
+      <div id="operation-power-note" class="operation-power-note"><strong>Keep your FlexClock powered on.</strong><p>{% if action == 'install' %}Keep it connected to the internet until the update finishes. {% endif %}The clock and dashboard will restart.</p></div>
+      <a class="button secondary" id="operation-return" href="/updates" hidden>Back to software updates</a>
+    </div>
+    <ol class="operation-steps" aria-label="Update steps">
+      {% set steps = [('installing','Restore saved version'),('restarting','Restart clock and dashboard'),('verifying','Confirm everything is ready')] if action == 'rollback' else [('downloading','Download update'),('validating','Verify installation package'),('preparing','Prepare application'),('installing','Apply update'),('restarting','Restart clock and dashboard'),('verifying','Confirm everything is ready')] %}
+      {% for phase,label in steps %}<li data-operation-step="{{ phase }}"><span class="operation-step-number" aria-hidden="true">{{ loop.index }}</span><strong>{{ label }}</strong><span class="operation-step-state">Waiting</span></li>{% endfor %}
+    </ol>
+  </div>
+</section>
+{% endblock %}
