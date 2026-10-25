@@ -158,9 +158,20 @@ class Website(unittest.TestCase):
     def test_hostname_rejects_invalid_input_without_operation(self):
         self.login()
         with patch.object(web, 'hostname_operation') as operation:
-            for name in ['bad;reboot', '-invalid', 'end-', 'two words', 'UPPER', 'x'*64, 'a.b', '']:
+            for name in ['bad;reboot', '-invalid', 'end-', 'two words', 'x'*64, 'a.b', '']:
                 self.post('/settings/hostname', {'hostname': name, 'confirm': 'yes'})
             operation.assert_not_called()
+
+    def test_mixed_case_hostname_normalized_before_save(self):
+        self.login()
+        with patch.object(web, 'hostname_operation', return_value={'message':'Device name saved.'}) as operation:
+            response = self.post('/settings/hostname', {'hostname':' FlexClock1 ', 'confirm':'yes'})
+            self.assertEqual(response.location, '/settings')
+            operation.assert_called_once_with('flexclock1')
+        page = self.client.get('/settings').data
+        self.assertIn(b'pattern="[A-Za-z0-9]', page)
+        self.assertIn(b'id="confirmation-modal"', page)
+        self.assertNotIn(b'type="checkbox" name="confirm"', page)
 
     def test_hostname_helper_uses_stdin_and_reports_errors(self):
         import subprocess
@@ -303,14 +314,15 @@ class DeviceSettings(unittest.TestCase):
         for value in ['a', 'race-clock', 'a'*63, '123']:
             self.assertTrue(device.valid_hostname(value))
             self.assertEqual(hostname.validate_hostname(value), value)
-        for value in ['-bad', 'bad-', 'bad_name', 'bad;id', 'a'*64, '', 'Upper', None, 'é']:
+        for value in ['-bad', 'bad-', 'bad_name', 'bad;id', 'a'*64, '', None, 'é']:
             self.assertFalse(device.valid_hostname(value))
             with self.assertRaises(ValueError): hostname.validate_hostname(value)
+        self.assertEqual(hostname.validate_hostname(' FlexClock1 '), 'flexclock1')
         with patch.object(hostname.subprocess, 'run') as operation:
             with self.assertRaises(ValueError): hostname.set_hostname({'hostname': 'race-clock'})
             operation.assert_not_called()
         with patch.object(hostname.subprocess, 'run', side_effect=[subprocess.CompletedProcess([],0,'',''),subprocess.CompletedProcess([],0,'race-clock\n','')]) as operation:
-            self.assertIn('saved', hostname.set_hostname({'hostname':'race-clock','confirm':True})['message'])
+            self.assertIn('saved', hostname.set_hostname({'hostname':'Race-Clock','confirm':True})['message'])
             self.assertEqual(operation.call_args_list[0].args[0], ['/usr/bin/hostnamectl', 'set-hostname', 'race-clock'])
         with patch.object(hostname.subprocess, 'run', return_value=subprocess.CompletedProcess([],1,'','denied')):
             with self.assertRaises(ValueError): hostname.set_hostname({'hostname':'race-clock','confirm':True})

@@ -259,10 +259,10 @@ def hostname_operation(name):
 
 @app.post('/settings/hostname')
 def hostname_save():
-    name = request.form.get('hostname', '').strip()
+    name = request.form.get('hostname', '').strip().lower()
     try:
         if not device.valid_hostname(name):
-            raise ValueError('Use 1–63 lowercase letters, numbers or hyphens. Start and end with a letter or number.')
+            raise ValueError('Use letters, numbers and hyphens, with a letter or number at each end (up to 63 characters).')
         if request.form.get('confirm') != 'yes':
             raise ValueError('Confirm the device name change before saving.')
         result = hostname_operation(name)
