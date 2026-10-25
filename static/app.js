@@ -161,12 +161,15 @@ if (updateRoot) {
   const element = name => document.getElementById(`update-${name}`);
   const release = element('release');
   const dialog = element('modal');
-  let state = null, requested = null, waiting = false, localMessage = null;
+  let state = null, requested = null, waiting = false, checking = false, localMessage = null;
   function pill(target, text, tone) {
     const span = document.createElement('span'); span.className = `pill ${tone}`;
     span.textContent = text; target.replaceChildren(span);
   }
   function controls() {
+    element('checking').hidden = !checking;
+    element('check').setAttribute('aria-busy', String(checking));
+    element('check-label').textContent = checking ? 'Checking…' : 'Check for updates';
     const option = release.selectedOptions[0];
     element('install').disabled = waiting || !state?.configured || state.busy || !option?.value || option.dataset.installable !== 'yes' || option.value === state.installed;
     element('rollback').disabled = waiting || !state?.configured || state.busy || !state.previous;
@@ -181,6 +184,12 @@ if (updateRoot) {
     element('installed').textContent = data.installed;
     element('latest').textContent = data.latest?.version || (data.checked ? 'No releases published' : 'Not checked');
     element('previous').textContent = data.previous || 'None yet';
+    const checked = element('checked-at');
+    const checkedDate = data.checked_at ? new Date(data.checked_at) : null;
+    checked.textContent = checkedDate && !Number.isNaN(checkedDate.getTime()) ? new Intl.DateTimeFormat(undefined, {dateStyle:'medium', timeStyle:'medium'}).format(checkedDate) : 'Not yet';
+    if (data.checked_at) checked.dateTime = data.checked_at;
+    else checked.removeAttribute('datetime');
+    element('check-result').textContent = !localMessage && data.checked && !data.available ? 'No updates available.' : '';
     element('availability').textContent = data.available ? 'Update available' : data.latest ? 'Up to date' : data.checked ? 'No releases published' : 'Check for releases';
     element('availability').className = `pill ${data.available ? 'info' : 'neutral'}`;
     if (initial || refreshReleases || release.options.length === 1 && data.releases.length) {
@@ -224,10 +233,10 @@ if (updateRoot) {
     setTimeout(poll, 2000);
   }
   element('check').addEventListener('click', async () => {
-    waiting=true; localMessage=null; controls(); pill(element('progress'), 'Checking releases…', 'info');
+    waiting=true; checking=true; localMessage=null; element('check-result').textContent=''; controls(); pill(element('progress'), 'Checking for updates…', 'info');
     try { const reply=await post('/updates/check'); render(reply.update,true); }
-    catch (error) { localMessage=error.message; pill(element('progress'), error.message, 'danger'); }
-    finally { waiting=false; controls(); }
+    catch (error) { localMessage=error.message; element('check-result').textContent=''; pill(element('progress'), error.message, 'danger'); }
+    finally { waiting=false; checking=false; controls(); }
   });
   release.addEventListener('change',controls);
   for (const action of ['install','rollback']) element(action).addEventListener('click', () => {

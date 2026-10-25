@@ -102,3 +102,33 @@ class SoftwareUpdates(unittest.TestCase):
             result = updates.check()
         self.assertIsNone(result['latest'])
         self.assertFalse(result['available'])
+
+    def test_two_part_versions_order_and_check_timestamp(self):
+        for candidate, installed, expected in [('1.42','1.41',True),('1.41','1.42',False),
+                                                ('1.42','1.42',False),('1.42.1','1.42',True),('1.9','1.41',False)]:
+            self.assertEqual(updates.newer(candidate,installed),expected)
+        (self.root/'installed.json').write_text(json.dumps(dict(version='1.41')))
+        releases = [dict(tag_name='1.9',assets=[]), dict(tag_name='1.42',assets=[dict(name='ledsign-release.tar.gz',digest='sha256:'+'b'*64)]),dict(tag_name='1.41',assets=[])]
+        with patch.object(updates.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(releases).encode())):
+            result = updates.check()
+        self.assertEqual([item['version'] for item in result['releases']], ['1.42','1.41','1.9'])
+        self.assertTrue(result['available'])
+        self.assertTrue(result['latest']['installable'])
+        from datetime import datetime
+        datetime.fromisoformat(result['checked_at'])
+        self.assertEqual(updates.snapshot()['checked_at'],result['checked_at'])
+
+    def test_empty_result_shows_no_updates_and_failed_check_keeps_last_success(self):
+        self.login()
+        with patch.object(updates.urllib.request,'urlopen',return_value=io.BytesIO(b'[]')):
+            result = updates.check()
+        before = updates.CACHE.read_bytes()
+        page = self.client.get('/updates').data
+        self.assertIn(b'No updates available.',page)
+        self.assertIn(b'Last checked:',page)
+        self.assertIn(result['checked_at'].encode(),page)
+        self.assertIn(b'update-checking',page)
+        self.assertIn(b'checking-spinner',page)
+        with patch.object(updates.urllib.request,'urlopen',side_effect=OSError('offline')):
+            self.assertEqual(self.post('/updates/check').status_code,503)
+        self.assertEqual(updates.CACHE.read_bytes(),before)

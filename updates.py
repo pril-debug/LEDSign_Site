@@ -1,5 +1,6 @@
 """Read-only update status and release discovery; installation is a separate service."""
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
@@ -8,7 +9,7 @@ import urllib.request
 STATE = Path('/var/lib/flexclock-updates')
 CACHE = Path(__file__).resolve().parents[1]/'config/update-releases.json'
 API = 'https://api.github.com/repos/pril-debug/LEDSign/releases?per_page=50'
-TAG = re.compile(r'v?\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\Z')
+TAG = re.compile(r'v?\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.-]+)?\Z')
 
 
 def read(path, fallback):
@@ -20,8 +21,11 @@ def read(path, fallback):
 
 def newer(candidate, installed):
     def parts(value):
-        match = re.match(r'^v?(\d+)\.(\d+)\.(\d+)', value)
-        return tuple(map(int, match.groups())) if match else None
+        match = TAG.fullmatch(value)
+        if not match:
+            return None
+        numbers = re.match(r'^v?(\d+)\.(\d+)(?:\.(\d+))?', value).groups()
+        return tuple(int(number or 0) for number in numbers)
     remote, local = parts(candidate), parts(installed)
     return bool(remote and (local is None or remote > local))
 
@@ -32,7 +36,7 @@ def snapshot():
     cached = read(CACHE, {})
     releases = cached.get('releases', [])
     version = installed.get('version', 'Not configured')
-    return dict(checked=bool(cached), configured=bool(installed), installed=version,
+    return dict(checked=bool(cached), checked_at=cached.get('checked_at'), configured=bool(installed), installed=version,
                 previous=installed.get('previous_version'), status=status,
                 busy=status.get('phase') in ('queued', 'downloading', 'preparing', 'installing', 'verifying', 'restoring'),
                 releases=releases, latest=releases[0] if releases else None,
@@ -54,9 +58,9 @@ def check():
         asset = next((a for a in item.get('assets', []) if a.get('name') == 'ledsign-release.tar.gz'), {})
         releases.append(dict(version=tag, notes=(item.get('body') or '')[:30000],
                              installable=bool(re.fullmatch(r'sha256:[0-9a-f]{64}', asset.get('digest') or ''))))
-    releases.sort(key=lambda item: tuple(map(int, re.match(r'v?(\d+)\.(\d+)\.(\d+)', item['version']).groups())), reverse=True)
+    releases.sort(key=lambda item: tuple(int(number or 0) for number in re.match(r'v?(\d+)\.(\d+)(?:\.(\d+))?', item['version']).groups()), reverse=True)
     tmp = CACHE.with_suffix('.tmp')
-    tmp.write_text(json.dumps(dict(releases=releases)))
+    tmp.write_text(json.dumps(dict(releases=releases, checked_at=datetime.now(timezone.utc).isoformat())))
     tmp.replace(CACHE)
     return snapshot()
 
