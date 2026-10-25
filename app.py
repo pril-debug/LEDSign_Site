@@ -1,287 +1,261 @@
 #!/usr/bin/env python3
-import os, json, secrets, subprocess
+import io
+import ipaddress
+import json
+import os
+import secrets
+import subprocess
+from datetime import timedelta
 from pathlib import Path
-from flask import Flask, request, redirect, url_for, render_template, session, flash, send_from_directory
+from flask import Flask, request, redirect, url_for, render_template, session, flash, send_file, abort
 from werkzeug.security import check_password_hash, generate_password_hash
+from PIL import Image, UnidentifiedImageError
+import device
 
-# Resolve /home/<user>/sign-controller from repo location
 APP_ROOT = Path(__file__).resolve().parents[1]
-CONF_PATH = APP_ROOT / "config" / "settings.json"
-LOGO_DEFAULT = APP_ROOT / "config" / "Logo-White.png"
-LOGO_CUSTOM  = APP_ROOT / "config" / "customer_logo.png"
-SCRIPTS_DIR  = APP_ROOT / "scripts"
+CONF_PATH = APP_ROOT / 'config/settings.json'
+LOGO_DEFAULT = APP_ROOT / 'config/Logo-White.png'
+LOGO_CUSTOM = APP_ROOT / 'config/customer_logo.png'
+SCRIPTS_DIR = APP_ROOT / 'scripts'
+app = Flask(__name__)
+# Persistent secret supports multiple workers and service restarts; never replace settings.
+def secret():
+    if os.environ.get('SC_SECRET'):
+        return os.environ['SC_SECRET']
+    path = APP_ROOT / 'config/.web-secret'
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return path.read_text().strip()
+    with os.fdopen(fd, 'w') as f:
+        value = secrets.token_hex(32)
+        f.write(value)
+    return value
+app.secret_key = secret()
+app.config.update(MAX_CONTENT_LENGTH=4*1024*1024, SESSION_COOKIE_HTTPONLY=True,
+                  SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=timedelta(hours=8))
 
-UPLOAD_ALLOWED = {"png","jpg","jpeg","gif"}
 
 def load_conf():
-    with open(CONF_PATH,"r") as f:
-        return json.load(f)
+    return json.loads(CONF_PATH.read_text())
+
 
 def save_conf(conf):
-    tmp = CONF_PATH.with_suffix(".tmp")
-    with open(tmp,"w") as f:
-        json.dump(conf,f,indent=2)
+    tmp = CONF_PATH.with_suffix('.tmp')
+    with open(tmp, 'w') as f:
+        os.chmod(tmp, 0o600)
+        json.dump(conf, f, indent=2)
     os.replace(tmp, CONF_PATH)
 
-def is_logged_in():
-    return session.get("auth") is True
 
-app = Flask(__name__, static_url_path="/static", static_folder="static", template_folder="templates")
-app.secret_key = os.environ.get("SC_SECRET", secrets.token_hex(16))
+def auth_version():
+    import hashlib
+    return hashlib.sha256(load_conf()['auth']['password_hash'].encode()).hexdigest()
+
+
+@app.before_request
+def protect():
+    public = {'landing', 'login', 'static', 'health'}
+    if request.endpoint not in public:
+        if not session.get('auth') or session.get('version') != auth_version():
+            session.clear()
+            return redirect(url_for('login'))
+    if request.method == 'POST':
+        if not secrets.compare_digest(session.get('csrf', ''), request.form.get('csrf', '')) or not session.get('csrf'):
+            abort(400, 'The form expired. Reload the page and try again.')
+
 
 @app.context_processor
-def inject_globals():
-    return {"custom_logo_exists": LOGO_CUSTOM.exists()}
+def globals_():
+    if 'csrf' not in session:
+        session['csrf'] = secrets.token_hex(32)
+    return dict(csrf=session['csrf'], custom_logo_exists=LOGO_CUSTOM.exists())
 
-@app.get("/")
+
+@app.after_request
+def headers(response):
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Content-Security-Policy'] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'"
+    return response
+
+
+@app.get('/')
 def landing():
-    return render_template("landing.html")
+    return render_template('landing.html', title='LED Track Sign')
 
-@app.route("/login", methods=["GET","POST"])
+
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    conf = load_conf()
-    if request.method == "POST":
-        u = request.form.get("username","").strip()
-        p = request.form.get("password","")
-        if u == conf["auth"]["username"] and check_password_hash(conf["auth"]["password_hash"], p):
-            session["auth"] = True
-            return redirect(url_for("dashboard"))
-        flash("Invalid username or password.","error")
-    return render_template("login.html")
+    if request.method == 'POST':
+        conf = load_conf()['auth']
+        if request.form.get('username', '').strip() == conf['username'] and check_password_hash(conf['password_hash'], request.form.get('password', '')):
+            session.clear()
+            session.update(auth=True, version=auth_version(), permanent=True)
+            return redirect(url_for('dashboard'))
+        flash('Invalid username or password.', 'error')
+    return render_template('login.html', title='Admin login')
 
-@app.post("/logout")
+
+@app.post('/logout')
 def logout():
     session.clear()
-    return redirect(url_for("landing"))
+    return redirect(url_for('landing'))
 
 
-# ---- helper: read configured Wi-Fi SSIDs from wpa_supplicant ----
-def _wifi_configured_ssids(conf_path="/etc/wpa_supplicant/wpa_supplicant.conf"):
-    ssids = []
-    try:
-        text = Path(conf_path).read_text(errors="ignore")
-        in_block = False
-        for line in text.splitlines():
-            s = line.strip()
-            if s.startswith("network={"):
-                in_block = True
-                continue
-            if in_block and s.startswith("}"):
-                in_block = False
-                continue
-            if in_block and s.startswith('ssid="'):
-                # grab value between first pair of quotes
-                try:
-                    val = s.split('ssid="', 1)[1].split('"', 1)[0]
-                    if val:
-                        ssids.append(val)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    # de-dup while preserving order
-    seen = set()
-    uniq = []
-    for x in ssids:
-        if x not in seen:
-            uniq.append(x); seen.add(x)
-    return uniq
-
-
-# ---- helper: read current Ethernet network (prefill form) ----
-def _current_net(iface="eth0"):
-    mode, ip, cidr, gw, dns = "dhcp", "", "", "", ""
-    # Prefer our tagged block in dhcpcd.conf
-    try:
-        confp = Path("/etc/dhcpcd.conf")
-        if confp.exists():
-            lines = confp.read_text().splitlines()
-            tag_begin = f"# LEDSign {iface} BEGIN"
-            tag_end   = f"# LEDSign {iface} END"
-            start = end = -1
-            for i,l in enumerate(lines):
-                if l.strip() == tag_begin: start = i
-                if l.strip() == tag_end:   end = i
-            if start != -1 and end != -1:
-                blk = "\n".join(lines[start:end+1])
-                if "static ip_address=" in blk:
-                    mode = "static"
-                for l in blk.splitlines():
-                    s = l.strip()
-                    if s.startswith("static ip_address="):
-                        v = s.split("=",1)[1].strip()
-                        ip, cidr = v.split("/",1)
-                    elif s.startswith("static routers="):
-                        gw = s.split("=",1)[1].strip()
-                    elif s.startswith("static domain_name_servers="):
-                        dns = s.split("=",1)[1].strip()
-    except Exception:
-        pass
-    # Fallbacks from live state
-    if not ip:
-        try:
-            out = subprocess.check_output(["ip","-4","-o","addr","show","dev",iface], text=True)
-            ipcidr = out.split()[3]  # e.g. 192.168.0.156/24
-            ip, cidr = ipcidr.split("/",1)
-        except Exception:
-            pass
-    if not gw:
-        try:
-            out = subprocess.check_output(["ip","route","show","default","dev",iface], text=True)
-            gw = out.split()[2]
-        except Exception:
-            pass
-    return dict(iface=iface, mode=mode, ip=ip, cidr=cidr, gw=gw, dns=dns)
-
-# ---- helper: current Wi-Fi state (for banner + row badge) ----
-def _wifi_state(iface="wlan0"):
-    ssid = ""
-    ip = ""
-    try:
-        ssid = subprocess.check_output(["iwgetid", iface, "-r"], text=True).strip()
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "dev", iface], text=True)
-        ip = out.split()[3].split("/")[0]
-    except Exception:
-        pass
-    return {"iface": iface, "ssid": ssid, "ip": ip, "connected": bool(ssid)}
-
-@app.get("/dashboard")
+@app.get('/dashboard')
 def dashboard():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-    conf = load_conf()
-    net = _current_net("eth0")
-    return render_template("dashboard.html", conf=conf, net=net)
+    return render_template('dashboard.html', title='Dashboard', status=device.status())
 
-# ----- Ethernet network -----
-@app.post("/network/apply")
-def network_apply():
-    if not is_logged_in():
-        return redirect(url_for("login"))
 
-    iface = (request.form.get("iface") or "eth0").strip()
-    mode  = (request.form.get("mode")  or "dhcp").strip().lower()
-    ip    = (request.form.get("ip")    or "").strip()
-    # support either "mask" (your template today) or "cidr"
-    cidr  = (request.form.get("mask")  or request.form.get("cidr") or "").strip()
-    gw    = (request.form.get("gw")    or "").strip()
-    # Accept "1.1.1.1 8.8.8.8" OR "1.1.1.1,8.8.8.8"
-    dns_raw = (request.form.get("dns") or "").replace(",", " ").strip()
-    dns_list = [d for d in dns_raw.split() if d]  # space-separated list
+@app.get('/display')
+def display():
+    return render_template('display.html', title='Display', conf=load_conf())
 
-    cmd = ["sudo", str(SCRIPTS_DIR/"apply_network.sh"), iface, mode]
-    if mode == "static":
-        if not ip or not cidr or not gw:
-            flash("Static requires IP, mask (CIDR), and gateway.","error")
-            return redirect(url_for("dashboard"))
-        cmd += [ip, cidr, gw]
-        if dns_list:
-            cmd += dns_list
 
-    try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
-        if r.returncode != 0:
-            raise subprocess.CalledProcessError(r.returncode, cmd, r.stdout, r.stderr)
-        flash("Network settings applied. Interface will bounce.","ok")
-    except subprocess.CalledProcessError as e:
-        flash((e.stderr or e.stdout) or "Apply failed","error")
-    except Exception as e:
-        flash(str(e), "error")
+@app.get('/settings')
+def settings():
+    return render_template('settings.html', title='Settings', status=device.status())
 
-    return redirect(url_for("dashboard"))
 
-# ----- Wi-Fi scan/join -----
-@app.get("/wifi/scan")
+@app.get('/network')
+def network():
+    return render_template('network.html', title='Network', status=device.status(), aps=None)
+
+
+def helper(action, payload):
+    result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/web_network.py', action],
+                            input=json.dumps(payload), text=True, capture_output=True, timeout=50)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or 'Network operation failed. Check the device logs.')
+    return json.loads(result.stdout)
+
+
+@app.get('/wifi/scan')
 def wifi_scan():
-    if not is_logged_in():
-        return redirect(url_for("login"))
+    aps = []
     try:
-        out = subprocess.check_output(
-            ["sudo", str(SCRIPTS_DIR/"wifi_scan.sh")],
-            stderr=subprocess.STDOUT, timeout=20
-        )
-        aps = json.loads(out.decode() or "[]")
-    except Exception as e:
-        aps = []
-        flash(f"Wi-Fi scan failed: {e}", "error")
-    state = _wifi_state("wlan0")
-    configured_ssids = _wifi_configured_ssids()
-    return render_template("wifi.html", aps=aps, state=state, configured_ssids=configured_ssids)
+        aps = helper('scan', {})
+        if not aps:
+            flash('Scan completed; no named networks found. You can enter a hidden SSID manually.', 'ok')
+    except (ValueError, OSError, subprocess.TimeoutExpired) as e:
+        flash(str(e), 'error')
+    return render_template('network.html', title='Network', status=device.status(), aps=aps)
 
-@app.post("/wifi/apply")
+
+def network_payload(form):
+    mode = form.get('mode')
+    if mode not in ('dhcp', 'static'):
+        raise ValueError('Select DHCP or static.')
+    data = dict(mode=mode)
+    if mode == 'static':
+        address = ipaddress.IPv4Interface(f"{form.get('ip', '')}/{form.get('cidr', '')}")
+        gateway = ipaddress.IPv4Address(form.get('gw', ''))
+        if gateway not in address.network or address.ip in (address.network.network_address, address.network.broadcast_address):
+            raise ValueError('Use a host IP and a gateway in the same subnet.')
+        dns = form.get('dns', '').replace(',', ' ').split()
+        if not dns:
+            raise ValueError('Provide at least one DNS server for static configuration.')
+        data.update(address=str(address), gateway=str(gateway), dns=[str(ipaddress.IPv4Address(d)) for d in dns])
+    return data
+
+
+@app.post('/network/apply')
+def network_apply():
+    try:
+        data = network_payload(request.form)
+        if request.form.get('confirm') != 'yes':
+            raise ValueError('Confirm the Ethernet connectivity change before applying.')
+        result = helper('ethernet', data)
+        flash(result['message'], 'ok')
+    except (ValueError, OSError, subprocess.TimeoutExpired) as e:
+        flash(str(e), 'error')
+    return redirect(url_for('network'))
+
+
+@app.post('/wifi/apply')
 def wifi_apply():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-    ssid = request.form.get("ssid","")
-    psk  = request.form.get("psk","")
-    payload = json.dumps({"ssid": ssid, "psk": psk})
     try:
-        subprocess.run(
-            ["sudo", str(SCRIPTS_DIR/"apply_wifi.sh")],
-            input=payload.encode(),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True
-        )
-        flash("Wi-Fi settings applied. Reconfiguring…","ok")
-    except subprocess.CalledProcessError as e:
-        msg = (e.stderr or e.stdout)
-        if isinstance(msg, bytes):
-            msg = msg.decode(errors="ignore")
-        flash(msg or "Wi-Fi apply failed","error")
-    return redirect(url_for("wifi_scan"))
+        if request.form.get('confirm') != 'yes':
+            raise ValueError('Review and confirm the Wi-Fi operation first.')
+        result = helper('wifi', dict(ssid=request.form.get('ssid', ''), psk=request.form.get('psk', ''),
+                                    security=request.form.get('security'), disconnect=request.form.get('disconnect') == 'yes'))
+        flash(result['message'], 'ok')
+    except (ValueError, OSError, subprocess.TimeoutExpired) as e:
+        flash(str(e), 'error')
+    return redirect(url_for('network'))
 
-# ----- Customer logo upload -----
-def allowed_file(fn:str) -> bool:
-    return "." in fn and fn.rsplit(".",1)[1].lower() in UPLOAD_ALLOWED
 
-@app.post("/logo/upload")
+@app.post('/logo/upload')
 def logo_upload():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-    f = request.files.get("logo")
-    if not f or f.filename == "":
-        flash("No file selected.","error"); return redirect(url_for("dashboard"))
-    if not allowed_file(f.filename):
-        flash("Unsupported file type.","error"); return redirect(url_for("dashboard"))
-    f.save(LOGO_CUSTOM)
-    flash("Customer logo uploaded.","ok")
-    return redirect(url_for("dashboard"))
-
-# ----- Change admin password -----
-@app.post("/auth/change")
-def auth_change():
-    if not is_logged_in():
-        return redirect(url_for("login"))
-    current = request.form.get("current","")
-    new1 = request.form.get("new1","")
-    new2 = request.form.get("new2","")
-    conf = load_conf()
-    if not check_password_hash(conf["auth"]["password_hash"], current):
-        flash("Current password incorrect.","error"); return redirect(url_for("dashboard"))
-    if not new1 or new1 != new2:
-        flash("New passwords do not match.","error"); return redirect(url_for("dashboard"))
-    conf["auth"]["password_hash"] = generate_password_hash(new1)
-    save_conf(conf)
-    flash("Password updated.","ok")
-    return redirect(url_for("dashboard"))
-
-@app.get("/customer_logo.png")
-def customer_logo():
-    if LOGO_CUSTOM.exists():
-        return send_from_directory(LOGO_CUSTOM.parent, LOGO_CUSTOM.name)
-    return "", 404
-
-@app.get("/health")
-def health():
-    return {"status":"ok"}
-
-if __name__ == "__main__":
     try:
-        with open(CONF_PATH) as f:
-            port = int(json.load(f).get("web_port", 8000))
-    except Exception:
-        port = 8000
-    app.run(host="0.0.0.0", port=port)
+        upload = request.files.get('logo')
+        if not upload or not upload.filename:
+            raise ValueError('Choose an image.')
+        raw = upload.read()
+        with Image.open(io.BytesIO(raw)) as img:
+            if img.format not in ('PNG', 'JPEG', 'GIF') or img.width * img.height > 4_000_000:
+                raise ValueError('Use a PNG, JPEG or GIF up to 4 million pixels.')
+            img.verify()
+        with Image.open(io.BytesIO(raw)) as img:
+            output = io.BytesIO()
+            img.convert('RGBA').save(output, format='PNG')
+        tmp = LOGO_CUSTOM.with_suffix('.tmp')
+        tmp.write_bytes(output.getvalue())
+        os.replace(tmp, LOGO_CUSTOM)
+        flash('Customer logo validated and saved as PNG. This does not change the live display.', 'ok')
+    except (ValueError, OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        flash('Invalid image. Use a PNG, JPEG or GIF under 4 MB and 4 million pixels.', 'error')
+    return redirect(url_for('display'))
 
+
+@app.post('/logo/remove')
+def logo_remove():
+    LOGO_CUSTOM.unlink(missing_ok=True)
+    flash('Customer logo removed. Default logo preserved.', 'ok')
+    return redirect(url_for('display'))
+
+
+@app.get('/customer_logo.png')
+def customer_logo():
+    if not LOGO_CUSTOM.exists():
+        abort(404)
+    return send_file(LOGO_CUSTOM, mimetype='image/png')
+
+
+@app.get('/default_logo.png')
+def default_logo():
+    return send_file(LOGO_DEFAULT, mimetype='image/png')
+
+
+@app.post('/auth/change')
+def auth_change():
+    conf = load_conf()
+    current, new = request.form.get('current', ''), request.form.get('new1', '')
+    if not check_password_hash(conf['auth']['password_hash'], current):
+        flash('Current password incorrect.', 'error')
+    elif len(new) < 12 or len(new) > 128 or new != request.form.get('new2'):
+        flash('New passwords must match and contain 12–128 characters.', 'error')
+    else:
+        conf['auth']['password_hash'] = generate_password_hash(new)
+        save_conf(conf)
+        session.clear()
+        flash('Password updated. Sign in again.', 'ok')
+        return redirect(url_for('login'))
+    return redirect(url_for('settings'))
+
+
+@app.get('/health')
+def health():
+    return {'status': 'ok'}
+
+
+@app.errorhandler(400)
+@app.errorhandler(413)
+def bad_request(error):
+    return render_template('error.html', title='Request could not be completed', message=error.description), error.code
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(load_conf().get('web_port', 8000)))

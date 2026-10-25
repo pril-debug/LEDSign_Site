@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# Installer-generated device logo copy
+static/white-logo.png

@@ -1,9 +1,1 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="centered">
-  <img class="logo" src="{{ url_for('static', filename='white-logo.png') }}" alt="LED Logo">
-  <div class="cta">
-    <a class="btn" href="{{ url_for('login') }}">Admin Login</a>
-  </div>
-</div>
-{% endblock %}
+{% extends 'base.html' %}{% block content %}<section class="hero"><div><p class="eyebrow">PRECISION AT THE TRACK</p><h1>Every moment.<br>Clearly displayed.</h1><p class="lead">FlexClock LED Track Sign. A dedicated display for your track and field timing workflow.</p><a class="button" href="/login">Admin Login →</a><p class="muted">Device configuration requires administrator access.</p></div><div class="sign" role="img" aria-label="Illustration of a track timing display showing 2 minutes 3.7 seconds"><div>FLEXCLOCK</div><strong>2:03.7</strong><small>LED TRACK SIGN · ILLUSTRATION</small></div></section>{% endblock %}

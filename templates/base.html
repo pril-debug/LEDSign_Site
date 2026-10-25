@@ -1,42 +1,4 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>LED Track Sign</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
-</head>
-<body>
-  <header class="nav">
-    <div class="brand">LED Track Sign</div>
-    <nav>
-      {% if session.get('auth') %}
-        <a href="{{ url_for('dashboard') }}">Dashboard</a>
-        <a href="{{ url_for('wifi_scan') }}">Wi-Fi</a>
-        <form method="post" action="{{ url_for('logout') }}" style="display:inline">
-          <button class="linklike" type="submit">Logout</button>
-        </form>
-      {% else %}
-        <a href="{{ url_for('login') }}">Login</a>
-      {% endif %}
-    </nav>
-  </header>
-
-  {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-      <div class="flashwrap">
-        {% for cat, msg in messages %}
-          <div class="flash {{cat}}">{{ msg }}</div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  {% endwith %}
-
-  <main class="container">
-    {% block content %}{% endblock %}
-  </main>
-
-  <footer class="footer">© 2025 FlexClock • All rights reserved</footer>
-</body>
-</html>
-
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ title }} · FlexClock</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"><script defer src="{{ url_for('static', filename='app.js') }}"></script></head>
+<body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="/">FlexClock<span>LED TRACK SIGN</span></a><nav aria-label="Primary">{% if session.get('auth') %}{% for endpoint,label in [('dashboard','Dashboard'),('display','Display'),('network','Network'),('settings','Settings')] %}<a {% if request.endpoint == endpoint or endpoint == 'network' and request.endpoint == 'wifi_scan' %}aria-current="page"{% endif %} href="{{ url_for(endpoint) }}">{{ label }}</a>{% endfor %}<form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Log out</button></form>{% else %}<a class="button" href="/login">Admin Login</a>{% endif %}</nav></header>
+<main id="main"><div aria-live="polite">{% for cat,msg in get_flashed_messages(with_categories=true) %}<div class="notice {{ cat }}" role="status">{{ msg }}</div>{% endfor %}</div>{% block content %}{% endblock %}</main><footer>FlexClock · LED Track Sign management</footer></body></html>
