@@ -61,7 +61,7 @@ class Website(unittest.TestCase):
         self.login()
         for path in ['/dashboard', '/display', '/network', '/settings']:
             self.assertEqual(self.client.get(path).status_code, 200)
-        self.assertIn(b'Unknown', self.client.get('/dashboard').data)
+        self.assertIn(b'Display status unavailable', self.client.get('/dashboard').data)
 
     def test_password_validation_persistence_and_sessions(self):
         self.login()
@@ -69,7 +69,7 @@ class Website(unittest.TestCase):
         with self.client.session_transaction() as s: old_session.update(s)
         self.post('/auth/change', dict(current='wrong', new1='new-password-long', new2='new-password-long'))
         self.assertEqual(self.client.get('/settings').status_code, 200)
-        self.post('/auth/change', dict(current='original-password', new1='short', new2='short'))
+        self.post('/auth/change', dict(current='original-password', new1='four', new2='four'))
         self.assertEqual(self.post('/auth/change', dict(current='original-password', new1='new-password-long', new2='new-password-long')).location, '/login')
         self.assertEqual(json.loads(self.config.read_text())['other_device_setting'], 42)
         with self.client.session_transaction() as s: s.update(old_session)
@@ -118,6 +118,81 @@ class Website(unittest.TestCase):
             operation.assert_not_called()
             self.post('/wifi/apply', dict(ssid='test', confirm='yes'))
             self.assertIn(b'association timed out', self.client.get('/network').data)
+
+    def test_five_character_password_accepted_and_session_invalidated(self):
+        self.login()
+        response = self.post('/auth/change', dict(current='original-password', new1='abcde', new2='abcde'))
+        self.assertEqual(response.location, '/login')
+        self.assertEqual(self.client.get('/settings').status_code, 302)
+        self.assertEqual(self.post('/login', dict(username='admin', password='abcde')).location, '/dashboard')
+
+    def test_short_and_mismatched_passwords_rejected(self):
+        self.login()
+        original = self.config.read_bytes()
+        for new, confirmation in [('1234', '1234'), ('abcde', 'other'), ('', '')]:
+            self.post('/auth/change', dict(current='original-password', new1=new, new2=confirmation))
+            self.assertEqual(self.config.read_bytes(), original)
+        page = self.client.get('/settings').data
+        self.assertIn(b'minlength="5"', page)
+        self.assertIn(b'At least 5 characters', page)
+
+    def test_hostname_requires_authentication_csrf_and_confirmation(self):
+        with patch.object(web, 'hostname_operation') as operation:
+            self.assertEqual(self.client.post('/settings/hostname', data={'hostname': 'race-clock', 'confirm': 'yes'}).status_code, 302)
+            self.login()
+            self.assertEqual(self.client.post('/settings/hostname', data={'hostname': 'race-clock', 'confirm': 'yes'}).status_code, 400)
+            self.post('/settings/hostname', {'hostname': 'race-clock'})
+            operation.assert_not_called()
+            self.assertIn(b'Confirm the device name change', self.client.get('/settings').data)
+
+    def test_hostname_success_and_backend_failure(self):
+        self.login()
+        with patch.object(web, 'hostname_operation', return_value={'message': 'Device name saved.'}) as operation:
+            self.post('/settings/hostname', {'hostname': 'race-clock', 'confirm': 'yes'})
+            operation.assert_called_once_with('race-clock')
+            self.assertIn(b'Device name saved.', self.client.get('/settings').data)
+        with patch.object(web, 'hostname_operation', side_effect=ValueError('Hostname service failed')):
+            self.post('/settings/hostname', {'hostname': 'race-clock', 'confirm': 'yes'})
+            self.assertIn(b'Hostname service failed', self.client.get('/settings').data)
+
+    def test_hostname_rejects_invalid_input_without_operation(self):
+        self.login()
+        with patch.object(web, 'hostname_operation') as operation:
+            for name in ['bad;reboot', '-invalid', 'end-', 'two words', 'UPPER', 'x'*64, 'a.b', '']:
+                self.post('/settings/hostname', {'hostname': name, 'confirm': 'yes'})
+            operation.assert_not_called()
+
+    def test_hostname_helper_uses_stdin_and_reports_errors(self):
+        import subprocess
+        result = subprocess.CompletedProcess([], 0, '{"message":"saved"}', '')
+        with patch.object(web.subprocess, 'run', return_value=result) as operation:
+            self.assertEqual(web.hostname_operation('clock')['message'], 'saved')
+            self.assertEqual(operation.call_args.args[0], ['sudo', '-n', '/usr/local/libexec/flexclock/web_hostname.py'])
+            self.assertEqual(json.loads(operation.call_args.kwargs['input']), {'hostname':'clock', 'confirm':True})
+        with patch.object(web.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'Save failed')):
+            with self.assertRaises(ValueError): web.hostname_operation('clock')
+
+    def test_dashboard_statuses_and_ipv4_only(self):
+        self.login()
+        observations = device.status()
+        observations['networks'][0].update(ipv4=['192.0.2.4'], addresses=['192.0.2.4/24', '2001:db8::abcd/64'], badge=device.network_status('UP', ['192.0.2.4']))
+        observations['services']['sign-ui'].update(device.service_status('activating', 'auto-restart', 25))
+        with patch.object(web.device, 'status', return_value=observations):
+            page = self.client.get('/dashboard').data
+        self.assertIn(b'Restarting', page)
+        self.assertIn(b'25 automatic restarts', page)
+        self.assertIn(b'192.0.2.4', page)
+        self.assertNotIn(b'2001:db8', page)
+        self.assertIn(b'pill success', page)
+
+    def test_branding_and_asset_versions(self):
+        page = self.client.get('/').data
+        self.assertIn(b'Full-Color LED Race Clock', page)
+        for removed in (b'LED Track Sign', b'Illustration', b'Precision at the Track'):
+            self.assertNotIn(removed, page)
+        self.assertIn(b'style.css?v=', page)
+        self.assertIn(b'led-digits', page)
+
 
 
 class NetworkHelpers(unittest.TestCase):
@@ -195,6 +270,53 @@ class NetworkHelpers(unittest.TestCase):
             s = device.status()
         self.assertEqual(s['stack'], 'Unknown')
         self.assertEqual(s['networks'][0]['state'], 'Unknown')
+
+
+class DeviceSettings(unittest.TestCase):
+    def test_service_status_mapping(self):
+        for active, sub, restarts, label, tone in [
+            ('active','running',0,'Running','success'),
+            ('activating','start',0,'Starting','warning'),
+            ('activating','auto-restart',20,'Restarting','danger'),
+            ('failed','failed',1,'Failed','danger'),
+            ('inactive','dead',0,'Stopped','neutral'),
+            ('unknown','',0,'Unavailable','neutral')]:
+            result = device.service_status(active, sub, restarts)
+            self.assertEqual((result['label'],result['tone']), (label,tone))
+        self.assertIn('10 automatic restarts', device.service_status('active','running',10)['note'])
+
+    def test_network_status_mapping(self):
+        for state, ip, ssid, label, tone in [
+            ('UP',['192.0.2.1'],None,'Connected','success'),
+            ('DOWN',[],None,'Disconnected','danger'),
+            ('UP',[],'race-wifi','Connecting','warning'),
+            ('Unknown',[],None,'Unavailable','neutral'),
+            ('ERROR',[],None,'Error','danger')]:
+            result = device.network_status(state, ip, ssid)
+            self.assertEqual((result['label'], result['tone']), (label,tone))
+
+    def test_hostname_system_validation_and_operation(self):
+        spec = importlib.util.spec_from_file_location('hostname_helper', Path(__file__).resolve().parents[2] / 'scripts/web_hostname.py')
+        hostname = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hostname)
+        import subprocess
+        for value in ['a', 'race-clock', 'a'*63, '123']:
+            self.assertTrue(device.valid_hostname(value))
+            self.assertEqual(hostname.validate_hostname(value), value)
+        for value in ['-bad', 'bad-', 'bad_name', 'bad;id', 'a'*64, '', 'Upper', None, 'é']:
+            self.assertFalse(device.valid_hostname(value))
+            with self.assertRaises(ValueError): hostname.validate_hostname(value)
+        with patch.object(hostname.subprocess, 'run') as operation:
+            with self.assertRaises(ValueError): hostname.set_hostname({'hostname': 'race-clock'})
+            operation.assert_not_called()
+        with patch.object(hostname.subprocess, 'run', side_effect=[subprocess.CompletedProcess([],0,'',''),subprocess.CompletedProcess([],0,'race-clock\n','')]) as operation:
+            self.assertIn('saved', hostname.set_hostname({'hostname':'race-clock','confirm':True})['message'])
+            self.assertEqual(operation.call_args_list[0].args[0], ['/usr/bin/hostnamectl', 'set-hostname', 'race-clock'])
+        with patch.object(hostname.subprocess, 'run', return_value=subprocess.CompletedProcess([],1,'','denied')):
+            with self.assertRaises(ValueError): hostname.set_hostname({'hostname':'race-clock','confirm':True})
+        with patch.object(hostname.subprocess, 'run', side_effect=OSError('missing')):
+            with self.assertRaises(ValueError): hostname.set_hostname({'hostname':'race-clock','confirm':True})
+
 
 
 if __name__ == '__main__': unittest.main()

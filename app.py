@@ -69,7 +69,9 @@ def protect():
 def globals_():
     if 'csrf' not in session:
         session['csrf'] = secrets.token_hex(32)
-    return dict(csrf=session['csrf'], custom_logo_exists=LOGO_CUSTOM.exists())
+    import hashlib
+    assets = b''.join((Path(app.static_folder) / name).read_bytes() for name in ('style.css', 'app.js'))
+    return dict(csrf=session['csrf'], custom_logo_exists=LOGO_CUSTOM.exists(), asset_version=hashlib.sha256(assets).hexdigest()[:12])
 
 
 @app.after_request
@@ -83,7 +85,7 @@ def headers(response):
 
 @app.get('/')
 def landing():
-    return render_template('landing.html', title='LED Track Sign')
+    return render_template('landing.html', title='Full-Color LED Race Clock')
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -235,14 +237,38 @@ def auth_change():
     current, new = request.form.get('current', ''), request.form.get('new1', '')
     if not check_password_hash(conf['auth']['password_hash'], current):
         flash('Current password incorrect.', 'error')
-    elif len(new) < 12 or len(new) > 128 or new != request.form.get('new2'):
-        flash('New passwords must match and contain 12–128 characters.', 'error')
+    elif len(new) < 5 or len(new) > 128 or new != request.form.get('new2'):
+        flash('New passwords must match and contain 5–128 characters.', 'error')
     else:
         conf['auth']['password_hash'] = generate_password_hash(new)
         save_conf(conf)
         session.clear()
         flash('Password updated. Sign in again.', 'ok')
         return redirect(url_for('login'))
+    return redirect(url_for('settings'))
+
+
+def hostname_operation(name):
+    result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/web_hostname.py'],
+                            input=json.dumps({'hostname': name, 'confirm': True}), text=True,
+                            capture_output=True, timeout=25)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or 'The device name could not be saved.')
+    return json.loads(result.stdout)
+
+
+@app.post('/settings/hostname')
+def hostname_save():
+    name = request.form.get('hostname', '').strip()
+    try:
+        if not device.valid_hostname(name):
+            raise ValueError('Use 1–63 lowercase letters, numbers or hyphens. Start and end with a letter or number.')
+        if request.form.get('confirm') != 'yes':
+            raise ValueError('Confirm the device name change before saving.')
+        result = hostname_operation(name)
+        flash(result['message'], 'ok')
+    except (ValueError, OSError, subprocess.TimeoutExpired) as e:
+        flash(str(e) if isinstance(e, ValueError) else 'The device name service did not respond. Refresh Settings and try again.', 'error')
     return redirect(url_for('settings'))
 
 
