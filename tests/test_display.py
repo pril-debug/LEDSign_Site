@@ -45,8 +45,10 @@ class DisplaySettings(unittest.TestCase):
         for path in ('/dashboard', '/settings', '/finishlynx'):
             self.assertNotIn(b'href="/display"', self.client.get(path).data)
         settings = self.client.get('/settings').data
-        for label in (b'Clock logo', b'logo-settings-layout', b'/logo/upload', b'Default logo', b'Customer logo'):
+        for label in (b'Clock logo', b'logo-settings-layout', b'/logo/upload', b'Customer logo'):
             self.assertIn(label, settings)
+        self.assertNotIn(b'Default logo', settings)
+        self.assertNotIn(b'src="/default_logo.png"', settings)
         self.assertNotIn(b'upload-card', settings)
         self.assertNotIn(b'logo-card', settings)
         self.assertIn(b'updates-settings', settings)
