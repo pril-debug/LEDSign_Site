@@ -1,5 +1,8 @@
 document.querySelectorAll('.ssid').forEach(button => button.addEventListener('click', () => {
-  const field = document.getElementById('ssid'); field.value = button.dataset.ssid; field.focus();
+  const field = document.getElementById('ssid'); field.value = button.dataset.ssid;
+  const security = field.form.querySelector('select[name="security"]');
+  if (security && button.dataset.security) security.value = button.dataset.security;
+  field.focus();
 }));
 const modal = document.getElementById('confirmation-modal');
 let pending = null;
@@ -34,7 +37,7 @@ document.querySelectorAll('form:not([method="dialog"])').forEach(form => form.ad
   }
   approved.delete(form);
   const button = form.querySelector('button[type="submit"], button:not([type])');
-  if (button) { button.disabled = true; button.textContent = form.method.toLowerCase() === 'get' ? 'Searching…' : 'Saving…'; }
+  if (button) { button.disabled = true; button.textContent = form.dataset.busy || (form.method.toLowerCase() === 'get' ? 'Searching…' : 'Saving…'); }
   form.setAttribute('aria-busy', 'true');
 }));
 document.querySelectorAll('select[name="mode"]').forEach(select => {

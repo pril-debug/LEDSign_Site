@@ -227,9 +227,9 @@ class NetworkHelpers(unittest.TestCase):
         def wpa(*args):
             calls.append(args)
             return {'ping': 'PONG', 'add_network': '2', 'status': 'wpa_state=COMPLETED\nid=2'}.get(args[0], 'OK')
-        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa), patch.object(helper, 'run', return_value=''):
+        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa), patch.object(helper, 'run', return_value=''), patch.object(helper, 'wifi_events'), patch.object(helper, 'authentication_failed', return_value=False), patch.object(helper, 'wait_address', return_value=None):
             result = helper.wifi(dict(ssid='hidden', psk='password123', security='wpa2'))
-        self.assertIn('IPv4 lease pending', result['message'])
+        self.assertEqual('Connected, but no IP address was assigned.', result['message'])
         self.assertIn(('save_config',), calls)
         self.assertIn(('set_network', '2', 'scan_ssid', '1'), calls)
         self.assertTrue(all('eth0' not in args for args in calls))
@@ -240,7 +240,7 @@ class NetworkHelpers(unittest.TestCase):
             calls.append(args)
             if args[0] == 'set_network': raise ValueError('rejected')
             return {'ping': 'PONG', 'add_network': '3'}.get(args[0], 'OK')
-        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa):
+        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa), patch.object(helper, 'wifi_events'), patch.object(helper, 'authentication_failed', return_value=False):
             with self.assertRaises(ValueError): helper.wifi(dict(ssid='test', psk='password123', security='wpa2'))
         self.assertIn(('remove_network', '3'), calls)
         self.assertIn(('reconfigure',), calls)
@@ -253,7 +253,7 @@ class NetworkHelpers(unittest.TestCase):
             config.write_text(original)
             def mapped(path):
                 return root / Path(path).name
-            with patch.object(helper, 'require_stack'), patch.object(helper, 'Path', side_effect=mapped), patch.object(helper, 'run', return_value='') as operation:
+            with patch.object(helper, 'require_stack'), patch.object(helper, 'Path', side_effect=mapped), patch.object(helper, 'run', return_value='') as operation, patch.object(helper,'ipv4_addresses',return_value=[]):
                 helper.ethernet(dict(mode='static', address='192.168.0.50/24', gateway='192.168.0.1', dns=['1.1.1.1']))
                 self.assertIn(original, config.read_text())
                 self.assertEqual((root / 'dhcpcd.conf.flexclock-backup').read_text(), original)
@@ -272,9 +272,9 @@ class NetworkHelpers(unittest.TestCase):
                 operation.assert_not_called()
 
     def test_disconnect_only_targets_wifi(self):
-        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=['PONG', 'OK', 'OK', 'OK']) as operation:
+        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=['PONG', 'OK', 'OK', 'OK', 'wpa_state=DISCONNECTED']) as operation:
             helper.wifi(dict(disconnect=True))
-            self.assertEqual([call.args for call in operation.call_args_list], [('ping',), ('disable_network', 'all'), ('save_config',), ('disconnect',)])
+            self.assertEqual([call.args for call in operation.call_args_list], [('ping',), ('disable_network', 'all'), ('save_config',), ('disconnect',), ('status',)])
 
     def test_status_failures_unknown(self):
         with patch.object(device, 'run', return_value=None):
@@ -467,8 +467,8 @@ class ConnectionInformation(unittest.TestCase):
         import subprocess
         with patch.object(web.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','sudo /private/helper.py failed')):
             with self.assertRaisesRegex(ValueError,'No networks could be loaded'):web.helper('scan',{})
-        with patch.object(web.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','Live network changes are locked pending supervised Pi verification')):
-            with self.assertRaisesRegex(ValueError,'currently unavailable'):web.helper('wifi',{})
+        with patch.object(web.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','Wi-Fi is not ready.')):
+            with self.assertRaisesRegex(ValueError,'Wi-Fi is not ready'):web.helper('wifi',{})
 
     def test_network_layout_has_no_expanders_commands_or_checks(self):
         client=web.app.test_client()
@@ -479,6 +479,104 @@ class ConnectionInformation(unittest.TestCase):
         for wanted in [b'network-columns',b'ethernet-connection',b'wifi-connection',b'Subnet mask',b'MAC address',b'DNS servers']:
             self.assertIn(wanted,page)
         self.assertLess(page.index(b'ethernet-connection'),page.index(b'wifi-connection'))
+
+
+
+class WifiAddressSettings(unittest.TestCase):
+    def test_wifi_address_updates_only_wifi_and_preserves_ethernet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            config=root/'dhcpcd.conf'
+            original='hostname\n# LEDSign eth0 BEGIN\ninterface eth0\nstatic ip_address=192.0.2.3/24\n# LEDSign eth0 END\n'
+            config.write_text(original)
+            def mapped(path):return root/Path(path).name
+            with patch.object(helper,'require_stack'),patch.object(helper,'Path',side_effect=mapped),patch.object(helper,'run',return_value='') as run,patch.object(helper,'wait_address',return_value='192.0.2.10'),patch.object(helper,'ipv4_addresses',return_value=[]):
+                result=helper.set_address({'mode':'static','address':'192.0.2.10/24','gateway':'192.0.2.1','dns':['192.0.2.1']},'wlan0')
+                self.assertTrue(result['applied'])
+                self.assertIn(original,config.read_text())
+                self.assertIn('metric 3000',config.read_text())
+                self.assertIn('static ip_address=192.0.2.10/24',config.read_text())
+                run.assert_called_once_with(['dhcpcd','-n','wlan0'])
+                run.reset_mock()
+                helper.set_address({'mode':'dhcp'},'wlan0')
+                self.assertIn(original,config.read_text())
+                self.assertNotIn('static ip_address=192.0.2.10',config.read_text())
+                self.assertEqual(config.read_text().count('# LEDSign wlan0 BEGIN'),1)
+                run.assert_called_once_with(['dhcpcd','-n','wlan0'])
+
+    def test_bad_static_values_never_rebind(self):
+        with patch.object(helper,'require_stack'),patch.object(helper,'run') as operation:
+            with self.assertRaises(ValueError):helper.set_address({'mode':'static','address':'bad','gateway':'bad','dns':[]},'wlan0')
+            operation.assert_not_called()
+
+    def test_wrong_password_is_reported_and_profile_cleaned_up(self):
+        calls=[]
+        def wpa(*args):
+            calls.append(args)
+            return {'ping':'PONG','list_networks':'network id / ssid / bssid / flags','add_network':'4'}.get(args[0],'OK')
+        with patch.object(helper,'require_stack'),patch.object(helper,'wpa',side_effect=wpa),patch.object(helper,'wifi_events'),patch.object(helper,'authentication_failed',return_value=True):
+            with self.assertRaisesRegex(ValueError,'Incorrect Wi-Fi password'):helper.wifi({'ssid':'Test','psk':'test-passphrase','security':'wpa2'})
+        self.assertIn(('remove_network','4'),calls)
+        self.assertNotIn(('save_config',),calls)
+
+    def test_address_verification_does_not_accept_stale_static_for_dhcp(self):
+        with patch.object(helper,'ipv4_addresses',side_effect=[[{'local':'192.0.2.8','dynamic':False}],[{'local':'192.0.2.9','dynamic':True}]]),patch.object(helper.time,'sleep'):
+            self.assertEqual(helper.wait_address('wlan0','dhcp'),'192.0.2.9')
+
+    def test_wifi_address_route_auth_confirmation_and_validation(self):
+        client=web.app.test_client()
+        self.assertEqual(client.post('/wifi/address',data={}).status_code,302)
+        with client.session_transaction() as session:session.update(auth=True,version=web.auth_version(),csrf='test-token')
+        self.assertEqual(client.post('/wifi/address',data={'mode':'dhcp'}).status_code,400)
+        with patch.object(web,'helper') as operation:
+            client.post('/wifi/address',data={'csrf':'test-token','mode':'dhcp'})
+            client.post('/wifi/address',data={'csrf':'test-token','mode':'static','ip':'bad','confirm':'yes'})
+            operation.assert_not_called()
+            operation.return_value={'applied':True,'ip':'192.0.2.7'}
+            client.post('/wifi/address',data={'csrf':'test-token','mode':'dhcp','confirm':'yes'})
+            operation.assert_called_once_with('wifi_address',{'mode':'dhcp'})
+        page=client.get('/network').data
+        self.assertIn(b'Wi-Fi address settings applied.',page)
+        self.assertIn(b'/wifi/address',page)
+        self.assertNotIn(b'Connection changes are currently unavailable.',page)
+
+    def test_static_verification_waits_until_dhcp_address_is_replaced(self):
+        observations=[[{'local':'192.0.2.8','prefixlen':24,'dynamic':True}],[{'local':'192.0.2.8','prefixlen':24}]]
+        with patch.object(helper,'ipv4_addresses',side_effect=observations),patch.object(helper.time,'sleep'):
+            self.assertEqual(helper.wait_address('wlan0','static','192.0.2.8/24'),'192.0.2.8')
+
+    def test_static_route_protocol_does_not_mislabel_assignment(self):
+        item={'ifname':'wlan0','addr_info':[{'family':'inet','local':'192.0.2.8','prefixlen':24}]}
+        with patch.object(device.Path,'read_text',return_value='interface wlan0\nstatic ip_address=192.0.2.8/24\n'):
+            result=device.connection_details(item,[{'dev':'wlan0','dst':'default','protocol':'dhcp','gateway':'192.0.2.1'}],{})
+        self.assertEqual(result['assignment'],'Fixed address (Static)')
+
+    def test_sudo_warning_does_not_hide_wrong_password_message(self):
+        import subprocess
+        result=subprocess.CompletedProcess([],1,'','sudo: unable to resolve host test-device\nIncorrect Wi-Fi password.\n')
+        with patch.object(web.subprocess,'run',return_value=result):
+            with self.assertRaisesRegex(ValueError,'Incorrect Wi-Fi password'):
+                web.helper('wifi',{})
+
+    def test_missing_interface_command_has_plain_error(self):
+        with patch.object(helper,'run',side_effect=ValueError('wpa_cli failed')):
+            with self.assertRaisesRegex(ValueError,'Wi-Fi is not ready'):
+                helper.wpa('ping')
+
+    def test_saving_profiles_keeps_credentials_private(self):
+        with patch.object(helper,'run',return_value='OK'),patch.object(helper.Path,'exists',return_value=True),patch.object(helper.os,'chmod') as chmod:
+            helper.wpa('save_config')
+        self.assertEqual(chmod.call_count,2)
+        self.assertTrue(all(call.args[1]==0o600 for call in chmod.call_args_list))
+
+    def test_other_connection_ip_cannot_be_reused(self):
+        with patch.object(helper,'require_stack'),patch.object(helper,'ipv4_addresses',return_value=[{'local':'192.0.2.8'}]):
+            with self.assertRaisesRegex(ValueError,'already used'):
+                helper.set_address({'mode':'static','address':'192.0.2.8/24','gateway':'192.0.2.1','dns':['192.0.2.1']},'wlan0')
+
+    def test_wait_address_timeout_is_not_success(self):
+        with patch.object(helper,'ipv4_addresses',return_value=[]),patch.object(helper.time,'monotonic',side_effect=[0,0,30]),patch.object(helper.time,'sleep'):
+            self.assertIsNone(helper.wait_address('wlan0'))
 
 
 

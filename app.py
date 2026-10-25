@@ -149,8 +149,10 @@ def helper(action, payload):
                             input=json.dumps(payload), text=True, capture_output=True, timeout=50)
     if result.returncode:
         app.logger.warning('Network helper failed for %s: %s', action, result.stderr.strip())
-        if 'locked pending' in result.stderr:
-            raise ValueError('Connection changes are currently unavailable.')
+        known_errors = ('Wi-Fi is not ready.', 'Incorrect Wi-Fi password.', 'Unable to connect.', 'Enter a Wi-Fi password', 'Enter a network name', 'Choose the network security type.', 'Existing network settings need to be reviewed', 'Wi-Fi did not disconnect.', 'Another connection change is in progress.', 'That IP address is already used')
+        error_message = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else ''
+        if any(error_message.startswith(message) for message in known_errors):
+            raise ValueError(error_message)
         raise ValueError('No networks could be loaded. Try again.' if action == 'scan' else 'The connection could not be changed. Try again.')
     try:
         return json.loads(result.stdout)
@@ -218,15 +220,32 @@ def wifi_apply():
             raise ValueError('Review and confirm the Wi-Fi operation first.')
         result = helper('wifi', dict(ssid=request.form.get('ssid', ''), psk=request.form.get('psk', ''),
                                     security=request.form.get('security'), disconnect=request.form.get('disconnect') == 'yes'))
-        message = result.get('message', '')
         if request.form.get('disconnect') == 'yes':
-            flash('Wi-Fi disconnection requested.', 'ok')
-        elif 'IPv4 lease pending' in message:
-            flash('Wi-Fi connected, but no IP address has been assigned yet.', 'ok')
+            flash('Wi-Fi disconnected.', 'ok')
+        elif result.get('connected') and result.get('ip'):
+            flash('Wi-Fi connected. IP address: ' + result['ip'], 'ok')
+        elif result.get('connected'):
+            flash('Connected, but no IP address was assigned.', 'warning')
         else:
-            flash('Wi-Fi connected.', 'ok')
+            raise ValueError('Unable to connect. Try again.')
     except (ValueError, OSError, subprocess.TimeoutExpired) as e:
         flash(str(e) if isinstance(e, ValueError) else 'The connection could not be changed. Try again.', 'error')
+    return redirect(url_for('network'))
+
+
+@app.post('/wifi/address')
+def wifi_address_apply():
+    try:
+        data = network_payload(request.form)
+        if request.form.get('confirm') != 'yes':
+            raise ValueError('Confirm the Wi-Fi address change before saving.')
+        result = helper('wifi_address', data)
+        if result.get('applied') and result.get('ip'):
+            flash('Wi-Fi address settings applied. IP address: ' + result['ip'], 'ok')
+        else:
+            flash('Settings saved, but no matching IP address was assigned.', 'warning')
+    except (ValueError, OSError, subprocess.TimeoutExpired) as e:
+        flash(str(e) if isinstance(e, ValueError) else 'The Wi-Fi address could not be changed. Try again.', 'error')
     return redirect(url_for('network'))
 
 

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 SERVICE_LABELS = {'sign-web': 'Web Dashboard', 'sign-ui': 'LED Display Controller',
-                  'wpa_supplicant': 'Wi-Fi Service', 'dhcpcd': 'Network Service',
+                  'wpa_supplicant@wlan0': 'Wi-Fi Service', 'dhcpcd': 'Network Service',
                   'NetworkManager': 'Network Manager'}
 
 
@@ -90,7 +90,8 @@ def connection_details(item, routes, dns, signal=None):
     own_routes = [r for r in routes if r.get('dev') == name]
     defaults = sorted([r for r in own_routes if r.get('dst') == 'default' and r.get('gateway')], key=lambda r:r.get('metric',0))
     gateways = list(dict.fromkeys(r['gateway'] for r in defaults))
-    automatic = any(a.get('dynamic') for a in addresses) or any(r.get('protocol') == 'dhcp' for r in own_routes)
+    # dhcpcd also labels its static routes 'dhcp'; the address flag is authoritative.
+    automatic = any(a.get('dynamic') for a in addresses)
     assignment = 'Automatic (DHCP)' if automatic else 'Unavailable'
     # An explicit configured static address is evidence; lack of a DHCP flag is not.
     try:
