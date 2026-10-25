@@ -57,6 +57,21 @@ class Website(unittest.TestCase):
         self.assertEqual(self.post('/logout').location, '/')
         self.assertEqual(self.client.get('/settings').status_code, 302)
 
+    def test_background_requests_preserve_login_form(self):
+        for host in ('192.168.0.107', '192.168.0.178'):
+            with self.subTest(host=host):
+                client = web.app.test_client()
+                base = 'http://' + host
+                client.get('/login', base_url=base)
+                with client.session_transaction(base_url=base) as sess:
+                    token = sess['csrf']
+                self.assertEqual(client.get('/favicon.ico', base_url=base).status_code, 404)
+                self.assertEqual(client.get('/api/controller/status', base_url=base).status_code, 302)
+                response = client.post('/login', base_url=base, data={
+                    'csrf': token, 'username': 'admin', 'password': 'original-password'})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.location, '/dashboard')
+
     def test_pages_and_unknown_status(self):
         self.login()
         for path in ['/dashboard', '/network', '/settings']:

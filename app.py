@@ -61,10 +61,14 @@ def auth_version():
 
 @app.before_request
 def protect():
+    # Let Flask return 404 for missing assets without changing the login session.
+    if request.endpoint is None:
+        return
     public = {'landing', 'login', 'static', 'health', 'brand_logo'}
     if request.endpoint not in public:
         if not session.get('auth') or session.get('version') != auth_version():
-            session.clear()
+            if session.get('auth'):
+                session.clear()
             return redirect(url_for('login'))
     if request.method == 'POST':
         if not secrets.compare_digest(session.get('csrf', ''), request.form.get('csrf', '')) or not session.get('csrf'):
