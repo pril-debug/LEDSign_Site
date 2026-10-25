@@ -1,5 +1,6 @@
 """Bounded read-only device observations and plain-language status mappings."""
 import json
+import ipaddress
 import re
 import socket
 import subprocess
@@ -57,19 +58,84 @@ def network_status(state, ipv4, ssid=None):
     return dict(label='Unavailable', tone='neutral')
 
 
+def parse_dns(text):
+    """Resolve per-interface DNS without confusing it with another connection."""
+    result = {}
+    current = None
+    for line in (text or '').splitlines():
+        header = re.match(r'# resolv.conf from ([A-Za-z0-9_-]+)(?:[. ].*)?$', line)
+        if header:
+            current = header[1]
+            result.setdefault(current, [])
+        elif current and line.strip().startswith('nameserver '):
+            try:
+                value = str(ipaddress.ip_address(line.split()[1]))
+                if value not in result[current]:
+                    result[current].append(value)
+            except (ValueError, IndexError):
+                continue
+    return result
+
+
+def connection_details(item, routes, dns, signal=None):
+    addresses = [a for a in item.get('addr_info', []) if a.get('family') == 'inet']
+    ipv4 = [a['local'] for a in addresses]
+    masks = []
+    for address in addresses:
+        try:
+            masks.append(str(ipaddress.IPv4Network('0.0.0.0/' + str(address['prefixlen'])).netmask))
+        except (ValueError, KeyError):
+            pass
+    name = item.get('ifname')
+    own_routes = [r for r in routes if r.get('dev') == name]
+    defaults = sorted([r for r in own_routes if r.get('dst') == 'default' and r.get('gateway')], key=lambda r:r.get('metric',0))
+    gateways = list(dict.fromkeys(r['gateway'] for r in defaults))
+    automatic = any(a.get('dynamic') for a in addresses) or any(r.get('protocol') == 'dhcp' for r in own_routes)
+    assignment = 'Automatic (DHCP)' if automatic else 'Unavailable'
+    # An explicit configured static address is evidence; lack of a DHCP flag is not.
+    try:
+        current = None
+        for line in Path('/etc/dhcpcd.conf').read_text().splitlines():
+            value = line.split('#', 1)[0].strip()
+            if value.startswith('interface '):
+                current = value.split()[1]
+            elif value.startswith('profile '):
+                current = None
+            elif not automatic and current == name and value.startswith('static ip_address='):
+                assignment = 'Fixed address (Static)'
+    except OSError:
+        pass
+    strength = 'Unavailable'
+    if signal is not None:
+        strength = 'Strong' if signal >= -60 else 'Good' if signal >= -70 else 'Weak'
+    return dict(ip=ipv4, masks=list(dict.fromkeys(masks)), gateways=gateways,
+                dns=dns.get(name, []), mac=item.get('address') or 'Unavailable',
+                assignment=assignment, signal=strength,
+                ipv6=[a['local'] for a in item.get('addr_info', []) if a.get('family') == 'inet6'])
+
+
 def status():
     try:
         interfaces = json.loads(run(['ip', '-j', 'address']) or '[]')
     except ValueError:
         interfaces = []
+    try:
+        routes = json.loads(run(['ip', '-j', '-4', 'route', 'show']) or '[]')
+    except ValueError:
+        routes = []
+    dns = parse_dns(run(['resolvconf', '-l']))
+    link = run(['iw', 'dev', 'wlan0', 'link']) or ''
+    match = re.search(r'signal: (-?[0-9.]+)', link)
+    signal = float(match[1]) if match else None
     ssid = run(['iwgetid', 'wlan0', '-r']) or ''
     networks = []
     for name in ('eth0', 'wlan0'):
-        item = next((i for i in interfaces if i['ifname'] == name), {})
+        item = next((i for i in interfaces if i['ifname'] == name), {'ifname': name})
         addresses = [f"{a['local']}/{a['prefixlen']}" for a in item.get('addr_info', [])]
         ipv4 = [a['local'] for a in item.get('addr_info', []) if a['family'] == 'inet']
         state = item.get('operstate', 'Unknown')
         networks.append(dict(name=name, state=state, addresses=addresses, ipv4=ipv4,
+                             details=connection_details(item, routes, dns, signal if name == 'wlan0' else None),
                              badge=network_status(state, ipv4, ssid if name == 'wlan0' else None)))
     try:
         seconds = int(float(Path('/proc/uptime').read_text().split()[0]))
@@ -85,5 +151,4 @@ def status():
                               sub=values.get('SubState', 'unknown'), restarts=restarts,
                               **service_status(values.get('ActiveState'), values.get('SubState'), restarts))
     return dict(hostname=socket.gethostname(), uptime=uptime, networks=networks, services=services,
-                stack=stack(), ssid=ssid, gateway=run(['ip', 'route', 'show', 'default', 'dev', 'eth0']) or 'Unavailable',
-                dns=run(['resolvconf', '-l', 'eth0']) or 'Unavailable')
+                stack=stack(), ssid=ssid)

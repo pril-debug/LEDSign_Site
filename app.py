@@ -148,8 +148,14 @@ def helper(action, payload):
     result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/web_network.py', action],
                             input=json.dumps(payload), text=True, capture_output=True, timeout=50)
     if result.returncode:
-        raise ValueError(result.stderr.strip() or 'Network operation failed. Check the device logs.')
-    return json.loads(result.stdout)
+        app.logger.warning('Network helper failed for %s: %s', action, result.stderr.strip())
+        if 'locked pending' in result.stderr:
+            raise ValueError('Connection changes are currently unavailable.')
+        raise ValueError('No networks could be loaded. Try again.' if action == 'scan' else 'The connection could not be changed. Try again.')
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        raise ValueError('The connection information could not be read. Try again.')
 
 
 @app.get('/wifi/scan')
@@ -160,7 +166,7 @@ def wifi_scan():
         if not aps:
             flash('Scan completed; no named networks found. You can enter a hidden SSID manually.', 'ok')
     except (ValueError, OSError, subprocess.TimeoutExpired) as e:
-        flash(str(e), 'error')
+        flash(str(e) if isinstance(e, ValueError) else 'No networks could be loaded. Try again.', 'error')
     return render_template('network.html', title='Network', status=device.status(), aps=aps)
 
 
@@ -170,14 +176,25 @@ def network_payload(form):
         raise ValueError('Select DHCP or static.')
     data = dict(mode=mode)
     if mode == 'static':
-        address = ipaddress.IPv4Interface(f"{form.get('ip', '')}/{form.get('cidr', '')}")
-        gateway = ipaddress.IPv4Address(form.get('gw', ''))
+        subnet = form.get('mask') or form.get('cidr', '')
+        try:
+            address = ipaddress.IPv4Interface(f"{form.get('ip', '')}/{subnet}")
+        except ValueError:
+            raise ValueError('Enter a valid IP address and subnet mask.')
+        try:
+            gateway = ipaddress.IPv4Address(form.get('gw', ''))
+        except ValueError:
+            raise ValueError('Enter a valid gateway address.')
         if gateway not in address.network or address.ip in (address.network.network_address, address.network.broadcast_address):
-            raise ValueError('Use a host IP and a gateway in the same subnet.')
+            raise ValueError('The IP address and gateway must be on the same network.')
         dns = form.get('dns', '').replace(',', ' ').split()
         if not dns:
             raise ValueError('Provide at least one DNS server for static configuration.')
-        data.update(address=str(address), gateway=str(gateway), dns=[str(ipaddress.IPv4Address(d)) for d in dns])
+        try:
+            servers = [str(ipaddress.IPv4Address(d)) for d in dns]
+        except ValueError:
+            raise ValueError('Enter valid DNS server addresses.')
+        data.update(address=str(address), gateway=str(gateway), dns=servers)
     return data
 
 
@@ -187,10 +204,10 @@ def network_apply():
         data = network_payload(request.form)
         if request.form.get('confirm') != 'yes':
             raise ValueError('Confirm the Ethernet connectivity change before applying.')
-        result = helper('ethernet', data)
-        flash(result['message'], 'ok')
+        helper('ethernet', data)
+        flash('Ethernet settings saved. Reconnect using the new IP address if this page stops responding.', 'ok')
     except (ValueError, OSError, subprocess.TimeoutExpired) as e:
-        flash(str(e), 'error')
+        flash(str(e) if isinstance(e, ValueError) else 'The connection could not be changed. Try again.', 'error')
     return redirect(url_for('network'))
 
 
@@ -201,9 +218,15 @@ def wifi_apply():
             raise ValueError('Review and confirm the Wi-Fi operation first.')
         result = helper('wifi', dict(ssid=request.form.get('ssid', ''), psk=request.form.get('psk', ''),
                                     security=request.form.get('security'), disconnect=request.form.get('disconnect') == 'yes'))
-        flash(result['message'], 'ok')
+        message = result.get('message', '')
+        if request.form.get('disconnect') == 'yes':
+            flash('Wi-Fi disconnection requested.', 'ok')
+        elif 'IPv4 lease pending' in message:
+            flash('Wi-Fi connected, but no IP address has been assigned yet.', 'ok')
+        else:
+            flash('Wi-Fi connected.', 'ok')
     except (ValueError, OSError, subprocess.TimeoutExpired) as e:
-        flash(str(e), 'error')
+        flash(str(e) if isinstance(e, ValueError) else 'The connection could not be changed. Try again.', 'error')
     return redirect(url_for('network'))
 
 

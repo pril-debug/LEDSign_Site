@@ -419,4 +419,67 @@ class ServiceLogging(unittest.TestCase):
 
 
 
+class ConnectionInformation(unittest.TestCase):
+    def test_dns_is_matched_to_each_connection(self):
+        dns=device.parse_dns('# resolv.conf from eth0.dhcp\nnameserver 192.168.0.1\n# resolv.conf from wlan0.dhcp\nnameserver 10.0.0.1\nnameserver bad\n# resolv.conf from eth0.ra\nnameserver 2001:db8::1\n')
+        self.assertEqual(dns['eth0'],['192.168.0.1','2001:db8::1'])
+        self.assertEqual(dns['wlan0'],['10.0.0.1'])
+        self.assertEqual(device.parse_dns(None),{})
+
+    def test_masks_gateway_mac_and_assignment(self):
+        item=dict(ifname='eth0',address='aa:bb:cc:dd:ee:ff',addr_info=[dict(family='inet',local='192.168.0.10',prefixlen=24,dynamic=True)])
+        routes=[dict(dev='eth0',dst='default',gateway='192.168.0.1',protocol='dhcp',metric=1002),dict(dev='wlan0',dst='default',gateway='10.0.0.1')]
+        with patch.object(device.Path,'read_text',return_value=''):
+            result=device.connection_details(item,routes,{'eth0':['192.168.0.1']})
+        self.assertEqual(result['masks'],['255.255.255.0'])
+        self.assertEqual(result['gateways'],['192.168.0.1'])
+        self.assertEqual(result['dns'],['192.168.0.1'])
+        self.assertEqual(result['mac'],'aa:bb:cc:dd:ee:ff')
+        self.assertEqual(result['assignment'],'Automatic (DHCP)')
+
+    def test_missing_values_remain_unknown(self):
+        with patch.object(device.Path,'read_text',side_effect=OSError()):
+            result=device.connection_details({'ifname':'wlan0'},[],{})
+        self.assertEqual(result['assignment'],'Unavailable')
+        self.assertEqual(result['mac'],'Unavailable')
+        self.assertEqual(result['gateways'],[])
+        self.assertEqual(result['dns'],[])
+        self.assertEqual(result['signal'],'Unavailable')
+
+    def test_static_config_and_signal(self):
+        with patch.object(device.Path,'read_text',return_value='interface eth0\nstatic ip_address=192.0.2.5/24\n'):
+            result=device.connection_details({'ifname':'eth0'},[],{},signal=-55)
+            self.assertEqual(result['assignment'],'Fixed address (Static)')
+            self.assertEqual(result['signal'],'Strong')
+            other=device.connection_details({'ifname':'wlan0'},[],{},signal=-80)
+            self.assertEqual(other['assignment'],'Unavailable')
+            self.assertEqual(other['signal'],'Weak')
+
+    def test_dotted_subnet_form_and_legacy_prefix(self):
+        data=dict(mode='static',ip='192.168.0.50',mask='255.255.255.0',gw='192.168.0.1',dns='192.168.0.1')
+        self.assertEqual(web.network_payload(data)['address'],'192.168.0.50/24')
+        data.pop('mask');data['cidr']='24'
+        self.assertEqual(web.network_payload(data)['address'],'192.168.0.50/24')
+        data['mask']='255.0.255.0'
+        with self.assertRaisesRegex(ValueError,'subnet mask'):web.network_payload(data)
+
+    def test_helper_errors_do_not_expose_commands(self):
+        import subprocess
+        with patch.object(web.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','sudo /private/helper.py failed')):
+            with self.assertRaisesRegex(ValueError,'No networks could be loaded'):web.helper('scan',{})
+        with patch.object(web.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','Live network changes are locked pending supervised Pi verification')):
+            with self.assertRaisesRegex(ValueError,'currently unavailable'):web.helper('wifi',{})
+
+    def test_network_layout_has_no_expanders_commands_or_checks(self):
+        client=web.app.test_client()
+        with client.session_transaction() as session:session.update(auth=True,version=web.auth_version())
+        page=client.get('/network').data
+        for unwanted in [b'<details',b'<summary',b'<pre',b'wpa_cli',b'dhcpcd',b'wlan0',b'eth0',b'type="checkbox"',b'proto dhcp',b'CIDR']:
+            self.assertNotIn(unwanted,page)
+        for wanted in [b'network-columns',b'ethernet-connection',b'wifi-connection',b'Subnet mask',b'MAC address',b'DNS servers']:
+            self.assertIn(wanted,page)
+        self.assertLess(page.index(b'ethernet-connection'),page.index(b'wifi-connection'))
+
+
+
 if __name__ == '__main__': unittest.main()
