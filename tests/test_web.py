@@ -50,6 +50,30 @@ class Website(unittest.TestCase):
             self.assertEqual(self.client.get(route).status_code, 302)
         self.assertNotIn(b'192.168', self.client.get('/').data)
 
+    def test_hotspot_status_and_existing_authentication_at_fixed_url(self):
+        base = 'http://192.168.4.1'
+        self.assertEqual(self.client.get('/network', base_url=base).status_code,302)
+        self.client.get('/login',base_url=base)
+        with self.client.session_transaction(base_url=base) as sess:
+            token = sess['csrf']
+        self.assertEqual(self.client.post('/login',base_url=base,data={
+            'csrf':token,'username':'admin','password':'original-password'}).status_code,302)
+        self.assertEqual(self.client.post('/wifi/apply',base_url=base,data={}).status_code,400)
+        interfaces = [{'ifname':'wlan0','operstate':'UP','addr_info':[
+            {'family':'inet','local':'192.168.4.1','prefixlen':24}]}]
+        def run(args, **kwargs):
+            if args == ['ip','-j','address']: return json.dumps(interfaces)
+            return None
+        with patch.object(device,'run',side_effect=run),patch.object(device.Path,'read_text',return_value=json.dumps({
+                'mode':'hotspot','ssid':'FlexClock-ABCDEF','url':base})):
+            status = device.status()
+            self.assertEqual(status['networks'][1]['badge']['label'],'Hotspot active')
+        with patch.object(device,'status',return_value=status):
+            page = self.client.get('/network',base_url=base).data
+            self.assertIn(b'FlexClock-ABCDEF',page)
+            self.assertIn(b'http://192.168.4.1',page)
+            self.assertIn(b'Hotspot active',page)
+
     def test_login_logout_csrf(self):
         self.assertEqual(self.client.post('/login', data={}).status_code, 400)
         self.assertIn(b'Invalid username', self.post('/login', dict(username='admin', password='wrong')).data)
@@ -299,7 +323,8 @@ class NetworkHelpers(unittest.TestCase):
         def wpa(*args):
             calls.append(args)
             return {'ping': 'PONG', 'add_network': '2', 'status': 'wpa_state=COMPLETED\nid=2'}.get(args[0], 'OK')
-        with patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa), patch.object(helper, 'run', return_value=''), patch.object(helper, 'wifi_events'), patch.object(helper, 'authentication_failed', return_value=False), patch.object(helper, 'wait_address', return_value=None):
+        with patch.object(helper, 'HOTSPOT_ENABLED') as enabled, patch.object(helper, 'require_stack'), patch.object(helper, 'wpa', side_effect=wpa), patch.object(helper, 'run', return_value=''), patch.object(helper, 'wifi_events'), patch.object(helper, 'authentication_failed', return_value=False), patch.object(helper, 'wait_address', return_value=None):
+            enabled.exists.return_value = False  # Exercise legacy behavior independently of this Pi's setup.
             result = helper.wifi(dict(ssid='hidden', psk='password123', security='wpa2'))
         self.assertEqual('Connected, but no IP address was assigned.', result['message'])
         self.assertIn(('save_config',), calls)
@@ -586,7 +611,7 @@ class WifiAddressSettings(unittest.TestCase):
         def wpa(*args):
             calls.append(args)
             return {'ping':'PONG','list_networks':'network id / ssid / bssid / flags','add_network':'4'}.get(args[0],'OK')
-        with patch.object(helper,'require_stack'),patch.object(helper,'wpa',side_effect=wpa),patch.object(helper,'wifi_events'),patch.object(helper,'authentication_failed',return_value=True):
+        with patch.object(helper,'require_stack'),patch.object(helper,'wpa',side_effect=wpa),patch.object(helper,'wifi_events'),patch.object(helper,'authentication_failed',return_value=True),patch.object(helper,'run',return_value=''):
             with self.assertRaisesRegex(ValueError,'Incorrect Wi-Fi password'):helper.wifi({'ssid':'Test','psk':'test-passphrase','security':'wpa2'})
         self.assertIn(('remove_network','4'),calls)
         self.assertNotIn(('save_config',),calls)

@@ -301,7 +301,7 @@ def network():
 
 def helper(action, payload):
     result = subprocess.run(['sudo', '-n', '/usr/local/libexec/flexclock/web_network.py', action],
-                            input=json.dumps(payload), text=True, capture_output=True, timeout=50)
+                            input=json.dumps(payload), text=True, capture_output=True, timeout=90)
     if result.returncode:
         app.logger.warning('Network helper failed for %s: %s', action, result.stderr.strip())
         known_errors = ('Wi-Fi is not ready.', 'Incorrect Wi-Fi password.', 'Unable to connect.', 'Enter a Wi-Fi password', 'Enter a network name', 'Choose the network security type.', 'Existing network settings need to be reviewed', 'Wi-Fi did not disconnect.', 'Another connection change is in progress.', 'That IP address is already used')

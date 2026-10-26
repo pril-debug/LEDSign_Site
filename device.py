@@ -129,6 +129,13 @@ def status():
     match = re.search(r'signal: (-?[0-9.]+)', link)
     signal = float(match[1]) if match else None
     ssid = run(['iwgetid', 'wlan0', '-r']) or ''
+    hotspot = None
+    try:
+        value = json.loads(Path('/run/flexclock-hotspot.json').read_text())
+        if value.get('mode') == 'hotspot' and any(i.get('ifname') == 'wlan0' and any(a.get('local') == '192.168.4.1' for a in i.get('addr_info', [])) for i in interfaces):
+            hotspot = value
+    except (OSError, ValueError):
+        pass
     networks = []
     for name in ('eth0', 'wlan0'):
         item = next((i for i in interfaces if i['ifname'] == name), {'ifname': name})
@@ -138,6 +145,9 @@ def status():
         networks.append(dict(name=name, state=state, addresses=addresses, ipv4=ipv4,
                              details=connection_details(item, routes, dns, signal if name == 'wlan0' else None),
                              badge=network_status(state, ipv4, ssid if name == 'wlan0' else None)))
+    if hotspot:
+        networks[1]['badge'] = dict(label='Hotspot active', tone='warning')
+        networks[1]['details']['assignment'] = 'Fixed hotspot address'
     try:
         seconds = int(float(Path('/proc/uptime').read_text().split()[0]))
         uptime = f'{seconds // 86400}d {seconds // 3600 % 24}h {seconds // 60 % 60}m'
@@ -152,4 +162,4 @@ def status():
                               sub=values.get('SubState', 'unknown'), restarts=restarts,
                               **service_status(values.get('ActiveState'), values.get('SubState'), restarts))
     return dict(hostname=socket.gethostname(), uptime=uptime, networks=networks, services=services,
-                stack=stack(), ssid=ssid)
+                stack=stack(), ssid=ssid, hotspot=hotspot)
